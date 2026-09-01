@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+  <meta name="description" content="ChessVerse — A premium cross-platform online chess platform with room code multiplayer, AI, trivia, and more"/>
+  <title>ChessVerse — Online Multiplayer & Chess Platform</title>
+  <link rel="stylesheet" href="css/styles.css"/>
+</head>
+<body>
+  <div class="bg-mesh"></div>
+  <div class="bg-grid"></div>
+
+  <!-- ═══ Login Screen ═══ -->
+  <div class="login-container" id="loginScreen">
+    <div class="login-card glass">
+      <div class="login-logo">♔ CHESSVERSE</div>
+      <p class="login-subtitle">Master the board. Rise through the ranks.</p>
+
+      <div class="login-error" id="loginError"></div>
+
+      <form id="loginForm" onsubmit="return handleLogin(event)">
+        <div class="form-group">
+          <label class="form-label" for="username">Username</label>
+          <input class="form-input" id="username" type="text" placeholder="Enter your username" autocomplete="username" required/>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="password">Password</label>
+          <input class="form-input" id="password" type="password" placeholder="Enter your password" autocomplete="current-password" required/>
+        </div>
+        <button class="btn btn-primary btn-lg" type="submit" style="width:100%; margin-top:8px;">
+          Login &rarr;
+        </button>
+      </form>
+
+      <div style="text-align:center; margin: 16px 0 8px 0; font-size: 0.85rem; color: var(--text-muted);">
+        <span>─ OR ─</span>
+      </div>
+
+      <button class="btn btn-secondary btn-md" onclick="quickGuestLogin()" style="width:100%;">
+        ⚡ Quick Play as Guest
+      </button>
+
+      <div style="text-align:center; margin-top:16px;">
+        <button class="btn-link" onclick="openServerSettings()" style="font-size:0.75rem; color:var(--text-muted);">
+          ⚙️ Server Connection Settings
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ Navigation Bar (hidden until login) ═══ -->
+  <nav class="nav hidden" id="mainNav">
+    <div class="nav-brand" onclick="showPage('play')" style="cursor:pointer;">♔ CHESSVERSE</div>
+    <div class="nav-links">
+      <button class="nav-link active" onclick="showPage('play')" id="navPlay">Play</button>
+      <button class="nav-link" onclick="showPage('store')" id="navStore">Store</button>
+      <button class="nav-link" onclick="showPage('trivia')" id="navTrivia">Trivia</button>
+      <button class="nav-link" onclick="showPage('profile')" id="navProfile">Profile</button>
+      <button class="nav-link hidden" onclick="showPage('admin')" id="navAdmin">Admin</button>
+    </div>
+    <div class="nav-user">
+      <button class="btn-icon" title="Server Settings" onclick="openServerSettings()">⚙️</button>
+      <div style="text-align:right;">
+        <div style="font-size:0.85rem;font-weight:600;" id="navUsername">—</div>
+        <div style="font-size:0.7rem;color:var(--accent-light);" id="navRank">—</div>
+      </div>
+      <div class="nav-avatar" id="navAvatar">
+        <span id="navAvatarLetter">?</span>
+        <span class="streak-badge hidden" id="navStreak">0</span>
+      </div>
+      <button class="btn btn-secondary btn-sm" onclick="doLogout()">Logout</button>
+    </div>
+  </nav>
+
+  <!-- ═══ Page: Mode Select ═══ -->
+  <div class="mode-select hidden" id="pagePlay">
+    <div class="mode-title">Choose Your Battle</div>
+    <p class="mode-subtitle">Play online with friends or challenge AI</p>
+    <div class="mode-grid">
+      <!-- Online Multiplayer Card (Featured) -->
+      <div class="mode-card glass featured-mode" onclick="openRoomLobby()">
+        <div class="featured-badge">🔥 CROSS-PLATFORM</div>
+        <div class="mode-icon">🌐</div>
+        <div class="mode-name">Online Multiplayer</div>
+        <div class="mode-desc">Create or join match with room code. Play on Phone or PC.</div>
+        <div class="mode-mult">2.5× Points</div>
+      </div>
+
+      <div class="mode-card glass" onclick="startGame('easy')">
+        <div class="mode-icon">🌱</div>
+        <div class="mode-name">Easy AI</div>
+        <div class="mode-desc">Relaxed AI. Unlimited hints. Perfect for learning.</div>
+        <div class="mode-mult">1.5× Points</div>
+      </div>
+      <div class="mode-card glass" onclick="startGame('medium')">
+        <div class="mode-icon">⚔️</div>
+        <div class="mode-name">Medium AI</div>
+        <div class="mode-desc">Challenging AI. 3 hints per game. Test your skills.</div>
+        <div class="mode-mult">2× Points</div>
+      </div>
+      <div class="mode-card glass" onclick="startGame('hard')">
+        <div class="mode-icon">🔥</div>
+        <div class="mode-name">Hard AI</div>
+        <div class="mode-desc">Ruthless AI. No hints. Only for the brave.</div>
+        <div class="mode-mult">3× Points</div>
+      </div>
+      <div class="mode-card glass" onclick="startGame('versus')">
+        <div class="mode-icon">👥</div>
+        <div class="mode-name">Local Versus</div>
+        <div class="mode-desc">Hot-seat 2-player on same device screen.</div>
+        <div class="mode-mult">2× Points</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ Page: Game Board ═══ -->
+  <div class="game-layout hidden" id="pageGame">
+    <!-- Top Online Info Banner (Visible during online matches) -->
+    <div class="online-banner glass hidden" id="onlineBanner">
+      <div class="online-banner-item">
+        <span class="online-dot pulsing"></span>
+        <span id="onlineRoomCodeDisplay">Room: <strong>—</strong></span>
+        <button class="btn btn-secondary btn-xs" onclick="copyRoomCode()" title="Copy Room Code">📋 Code</button>
+        <button class="btn btn-secondary btn-xs" onclick="copyInviteLink()" title="Copy Link">🔗 Link</button>
+      </div>
+      <div class="online-banner-item">
+        <span id="onlinePlayerRole">Role: —</span>
+      </div>
+      <div class="online-banner-item">
+        <span id="onlineOpponentStatus">Opponent: Waiting... ⏳</span>
+      </div>
+    </div>
+
+    <!-- Left panel: Player info + Captured -->
+    <div class="panel glass" id="leftPanel">
+      <div class="panel-title">Players</div>
+      <div class="score-row" id="whitePlayerRow">
+        <span class="score-label" id="whitePlayerLabel">⬜ White</span>
+        <span class="score-value" id="whiteScore">0</span>
+      </div>
+      <div class="score-row" id="blackPlayerRow">
+        <span class="score-label" id="blackPlayerLabel">⬛ Black</span>
+        <span class="score-value" id="blackScore">0</span>
+      </div>
+      <hr style="border-color:var(--border-glass); margin:16px 0;"/>
+      <div class="panel-title" style="margin-top:0;">Captured Pieces</div>
+      <div id="capturedWhite" style="font-size:1.2rem; min-height:30px; margin-bottom:8px; word-break:break-all;"></div>
+      <div id="capturedBlack" style="font-size:1.2rem; min-height:30px; word-break:break-all;"></div>
+      <hr style="border-color:var(--border-glass); margin:16px 0;"/>
+      <div class="game-controls">
+        <button class="btn btn-secondary btn-sm" onclick="requestHint()" id="btnHint">💡 Hint (<span id="hintCount">∞</span>)</button>
+        <button class="btn btn-secondary btn-sm" onclick="flipBoard()" id="btnFlip">🔄 Flip</button>
+        <button class="btn btn-secondary btn-sm" onclick="undoMove()" id="btnUndo">↩ Undo</button>
+        <button class="btn btn-secondary btn-sm" onclick="copyMoves()">📋 Moves</button>
+        <button class="btn btn-danger btn-sm" onclick="resignGame()">🏳 Resign</button>
+      </div>
+    </div>
+
+    <!-- Center: Board -->
+    <div class="board-container">
+      <div class="turn-indicator glass" id="turnIndicator">
+        <div class="turn-dot white" id="turnDot"></div>
+        <span id="turnText">White's Turn</span>
+      </div>
+      <div class="board-wrapper">
+        <div class="board" id="chessBoard"></div>
+      </div>
+      <div class="board-labels-row" id="boardLabelsRow">
+        <span>a</span><span>b</span><span>c</span><span>d</span><span>e</span><span>f</span><span>g</span><span>h</span>
+      </div>
+    </div>
+
+    <!-- Right panel: Move log -->
+    <div class="panel glass" id="rightPanel">
+      <div class="panel-title">Move Log</div>
+      <div class="move-log" id="moveLog">
+        <div style="color:var(--text-muted); font-style:italic;">Game hasn't started yet...</div>
+      </div>
+      <hr style="border-color:var(--border-glass); margin:16px 0;"/>
+      <div class="panel-title" style="margin-top:0;">Analyze Moves</div>
+      <textarea class="form-input" id="analyzeInput" rows="2" placeholder="e.g. e2e4 e7e5 g1f3" style="font-family:monospace; font-size:0.8rem;"></textarea>
+      <button class="btn btn-secondary btn-sm" style="margin-top:8px; width:100%;" onclick="analyzeMoves()">🔍 Find Best Counter</button>
+      <div id="analyzeResult" style="margin-top:8px; font-size:0.85rem; color:var(--accent-light);"></div>
+    </div>
+  </div>
+
+  <!-- ═══ Page: Store ═══ -->
+  <div class="page-container hidden" id="pageStore">
+    <div class="page-title">🛒 Store</div>
+    <p class="page-subtitle">Spend your hard-earned points on premium skins</p>
+    <div style="margin-bottom:24px;">
+      <span style="color:var(--text-secondary);">Your Points: </span>
+      <span style="font-family:var(--font-display); font-weight:800; color:var(--gold); font-size:1.3rem;" id="storePoints">0</span>
+    </div>
+    <div class="page-title" style="font-size:1.2rem;">🎨 Board Skins</div>
+    <div class="store-grid" id="boardSkins" style="margin-bottom:32px;"></div>
+    <div class="page-title" style="font-size:1.2rem;">♟ Piece Skins</div>
+    <div class="store-grid" id="pieceSkins"></div>
+  </div>
+
+  <!-- ═══ Page: Trivia ═══ -->
+  <div class="page-container hidden" id="pageTrivia">
+    <div class="page-title">🎯 Daily Trivia</div>
+    <p class="page-subtitle">Answer correctly for bonus points!</p>
+    <div class="trivia-card glass" id="triviaCard">
+      <div id="triviaContent">
+        <div class="spinner" style="margin:40px auto;"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ Page: Profile ═══ -->
+  <div class="page-container hidden" id="pageProfile">
+    <div class="profile-header">
+      <div class="profile-avatar" id="profileAvatar">
+        <span id="profileAvatarLetter">?</span>
+        <span class="streak-badge hidden" id="profileStreak">0</span>
+      </div>
+      <div>
+        <div class="profile-name" id="profileName">—</div>
+        <div class="profile-rank" id="profileRankTitle">—</div>
+      </div>
+    </div>
+    <div class="exp-bar-container">
+      <div class="exp-bar-label">
+        <span id="expLabel">0 / 500 EXP</span>
+        <span id="nextRankLabel">Next: Apprentice</span>
+      </div>
+      <div class="exp-bar"><div class="exp-fill" id="expFill" style="width:0%;"></div></div>
+    </div>
+    <div class="stat-grid">
+      <div class="stat-card glass">
+        <div class="stat-value" id="statPoints">0</div>
+        <div class="stat-label">Points</div>
+      </div>
+      <div class="stat-card glass">
+        <div class="stat-value" id="statExp">0</div>
+        <div class="stat-label">Experience</div>
+      </div>
+      <div class="stat-card glass">
+        <div class="stat-value" id="statStreak">0</div>
+        <div class="stat-label">Day Streak 🔥</div>
+      </div>
+      <div class="stat-card glass">
+        <div class="stat-value" id="statRank">—</div>
+        <div class="stat-label">Rank</div>
+      </div>
+    </div>
+    <div class="page-title" style="font-size:1.2rem; margin-bottom:16px;">🏆 Leaderboard</div>
+    <div class="glass" style="padding:20px; border-radius:var(--radius-lg);">
+      <table class="leaderboard-table" id="leaderboard">
+        <thead>
+          <tr><th>#</th><th>Player</th><th>Rank</th><th>EXP</th><th>Points</th><th>Streak</th></tr>
+        </thead>
+        <tbody id="leaderboardBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ═══ Page: Admin ═══ -->
+  <div class="page-container hidden" id="pageAdmin">
+    <div class="page-title">👑 Admin Panel</div>
+    <p class="page-subtitle">Manage users, trivia questions, and store items</p>
+    <div class="admin-grid">
+      <div class="admin-section glass">
+        <div class="admin-section-title">Add User</div>
+        <div class="form-group">
+          <label class="form-label">Username</label>
+          <input class="form-input" id="adminNewUser" placeholder="New username"/>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Password</label>
+          <input class="form-input" id="adminNewPass" type="password" placeholder="Password"/>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Role</label>
+          <select class="form-input" id="adminNewRole">
+            <option value="player">Player</option>
+            <option value="admin">Admin</option>
+          </select>
+        </div>
+        <button class="btn btn-primary" onclick="adminAddUser()">Add User</button>
+      </div>
+      <div class="admin-section glass">
+        <div class="admin-section-title">Add Trivia Question</div>
+        <div class="form-group">
+          <label class="form-label">Question</label>
+          <input class="form-input" id="adminTriviaQ" placeholder="Enter question text"/>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Option A</label>
+          <input class="form-input" id="adminOptA" placeholder="Option A"/>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Option B</label>
+          <input class="form-input" id="adminOptB" placeholder="Option B"/>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Option C</label>
+          <input class="form-input" id="adminOptC" placeholder="Option C"/>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Option D</label>
+          <input class="form-input" id="adminOptD" placeholder="Option D"/>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Correct Answer (0=A, 1=B, 2=C, 3=D)</label>
+          <select class="form-input" id="adminTriviaCorrect">
+            <option value="0">A</option><option value="1">B</option>
+            <option value="2">C</option><option value="3">D</option>
+          </select>
+        </div>
+        <button class="btn btn-primary" onclick="adminAddTrivia()">Add Question</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ Room Lobby Modal (Create / Join Online Match) ═══ -->
+  <div class="modal-overlay" id="roomLobbyModal">
+    <div class="modal-content glass lobby-modal">
+      <button class="modal-close-btn" onclick="closeRoomLobby()">✕</button>
+      
+      <div class="lobby-tabs">
+        <button class="lobby-tab active" id="tabCreateRoom" onclick="switchLobbyTab('create')">Create Match</button>
+        <button class="lobby-tab" id="tabJoinRoom" onclick="switchLobbyTab('join')">Join with Code</button>
+      </div>
+
+      <!-- Create Match Section -->
+      <div id="lobbyCreateSection">
+        <div class="lobby-intro">
+          <p>Create a match room and share the 6-digit code with your friend to play online across Phone and PC.</p>
+        </div>
+
+        <div id="roomCreationForm">
+          <div class="form-group">
+            <label class="form-label">Choose Your Color</label>
+            <div class="color-picker-group">
+              <label class="color-option">
+                <input type="radio" name="colorPref" value="white" checked/>
+                <span class="color-card">⬜ Play White (First)</span>
+              </label>
+              <label class="color-option">
+                <input type="radio" name="colorPref" value="black"/>
+                <span class="color-card">⬛ Play Black</span>
+              </label>
+            </div>
+          </div>
+          <button class="btn btn-gold btn-lg" style="width:100%; margin-top:12px;" onclick="createOnlineRoom()">
+            ⚡ Create Match Room
+          </button>
+        </div>
+
+        <!-- Waiting for Opponent Screen (Shown after room code is generated) -->
+        <div class="hidden" id="roomWaitingScreen">
+          <div class="room-code-badge">
+            <div class="room-code-label">YOUR ROOM CODE</div>
+            <div class="room-code-value" id="createdRoomCode">------</div>
+            <div class="room-action-buttons">
+              <button class="btn btn-secondary btn-sm" onclick="copyRoomCode()">📋 Copy Code</button>
+              <button class="btn btn-secondary btn-sm" onclick="copyInviteLink()">🔗 Copy Link</button>
+            </div>
+          </div>
+
+          <div class="waiting-indicator">
+            <div class="spinner"></div>
+            <div class="waiting-text">Waiting for opponent to join...</div>
+            <div class="waiting-subtext">Share this code with your friend on Phone or PC</div>
+          </div>
+
+          <button class="btn btn-secondary btn-sm" style="width:100%; margin-top:16px;" onclick="cancelCreatedRoom()">
+            Cancel Match
+          </button>
+        </div>
+      </div>
+
+      <!-- Join Match Section -->
+      <div class="hidden" id="lobbyJoinSection">
+        <div class="lobby-intro">
+          <p>Enter the 6-digit match code provided by the room creator.</p>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Match Room Code</label>
+          <input class="form-input room-code-input" id="joinRoomCodeInput" type="text" placeholder="e.g. K9X2P8" maxlength="6" autocomplete="off" autocorrect="off" autocapitalize="characters"/>
+        </div>
+
+        <div class="login-error" id="joinError" style="display:none; margin-bottom:12px;"></div>
+
+        <button class="btn btn-primary btn-lg" style="width:100%;" onclick="joinOnlineRoomFromInput()">
+          ⚔️ Join Match &rarr;
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ Server Settings Modal ═══ -->
+  <div class="modal-overlay" id="serverSettingsModal">
+    <div class="modal-content glass" style="max-width: 440px;">
+      <button class="modal-close-btn" onclick="closeServerSettings()">✕</button>
+      <div class="win-title" style="font-size: 1.3rem; margin-bottom: 8px;">⚙️ Server Connection</div>
+      <p style="font-size:0.85rem; color:var(--text-secondary); margin-bottom:16px;">
+        Connect your frontend (Netlify/Local) to your C++ backend server.
+      </p>
+
+      <div class="form-group">
+        <label class="form-label">Backend API URL</label>
+        <input class="form-input" id="customApiUrl" placeholder="http://localhost:8080 or http://192.168.1.x:8080"/>
+        <div style="font-size:0.75rem; color:var(--text-muted); margin-top:4px;">
+          • Local PC: <code>http://localhost:8080</code><br/>
+          • Phone on same WiFi: <code>http://YOUR_PC_IP:8080</code><br/>
+          • Free Cloud/ngrok: <code>https://your-domain.ngrok-free.app</code>
+        </div>
+      </div>
+
+      <div style="display:flex; gap:8px; margin-top:16px;">
+        <button class="btn btn-primary" style="flex:1;" onclick="saveServerSettings()">Save & Connect</button>
+        <button class="btn btn-secondary" onclick="resetServerSettings()">Reset Default</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ Promotion Modal ═══ -->
+  <div class="modal-overlay" id="promotionModal">
+    <div class="modal-content glass" style="max-width: 300px; padding: 24px;">
+      <div class="win-title" style="font-size: 1.4rem; margin-bottom: 16px;">Promote Pawn</div>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+        <button class="btn btn-secondary" style="font-size: 2.5rem; padding: 12px;" onclick="selectPromotion('q')">♕</button>
+        <button class="btn btn-secondary" style="font-size: 2.5rem; padding: 12px;" onclick="selectPromotion('r')">♖</button>
+        <button class="btn btn-secondary" style="font-size: 2.5rem; padding: 12px;" onclick="selectPromotion('b')">♗</button>
+        <button class="btn btn-secondary" style="font-size: 2.5rem; padding: 12px;" onclick="selectPromotion('n')">♘</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ Win / Match Conclusion Modal ═══ -->
+  <div class="modal-overlay" id="winModal">
+    <div class="modal-content glass">
+      <div class="win-trophy" id="winTrophy">🏆</div>
+      <div class="win-title" id="winTitle">Victory!</div>
+      <div class="win-subtitle" id="winSubtitle">You defeated your opponent</div>
+      <div class="win-stats">
+        <div>
+          <div class="win-stat-value" id="winPoints">0</div>
+          <div class="win-stat-label">Points Earned</div>
+        </div>
+        <div>
+          <div class="win-stat-value" id="winExp">0</div>
+          <div class="win-stat-label">EXP Gained</div>
+        </div>
+      </div>
+      <div style="display:flex; gap:12px; justify-content:center; margin-top:16px;">
+        <button class="btn btn-gold btn-lg" onclick="closeWinModal()">Continue</button>
+        <button class="btn btn-secondary btn-lg hidden" id="btnOnlineRematch" onclick="requestOnlineRematch()">🔄 Rematch</button>
+      </div>
+    </div>
+  </div>
+  <canvas id="confetti-canvas"></canvas>
+
+  <!-- ═══ Toast Container ═══ -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <!-- ═══ Scripts ═══ -->
+  <script src="js/sounds.js"></script>
+  <script src="js/chess.js"></script>
+</body>
+</html>
