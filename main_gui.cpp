@@ -123,6 +123,11 @@ float g_copiedRoomTimer = 0.0f;
 bool          g_gameOver   = false;
 char          g_statusMsg[128] = "";
 
+int selectedRow = -1;
+int selectedCol = -1;
+int hintDestRow = -1;
+int hintDestCol = -1;
+
 // Move Noter / Prev-Next viewer state
 int  g_viewingMoveIdx = -1;    // -1 = live board, 0..N = viewing snapshot index
 int  g_noterScrollOffset = 0;  // Scroll offset for the move noter panel
@@ -194,6 +199,8 @@ extern "C" {
         if (roomId && strlen(roomId) > 0) {
             snprintf(g_onlineRoomCode, sizeof(g_onlineRoomCode), "%s", roomId);
         }
+        selectedRow = -1;
+        selectedCol = -1;
         g_isOnline = true;
         g_vsAI = false;
         g_appState = STATE_GAME;
@@ -211,6 +218,8 @@ extern "C" {
         snprintf(g_statusMsg, sizeof(g_statusMsg), "Game started! You play as %s.", (g_playerColor == P_WHITE) ? "White" : "Black");
     }
     void onOpponentJoined() {
+        selectedRow = -1;
+        selectedCol = -1;
         g_isOnline = true;
         g_vsAI = false;
         g_appState = STATE_GAME;
@@ -234,6 +243,8 @@ extern "C" {
         }
     }
     void applyOpponentMove(int fromRow, int fromCol, int toRow, int toCol, int promoteTo) {
+        selectedRow = -1;
+        selectedCol = -1;
         g_viewingMoveIdx = -1;
         MoveList legal = g_board.getLegalMoves(g_board.state.currentTurn);
         for(int i = 0; i < legal.count; i++) {
@@ -256,7 +267,7 @@ extern "C" {
                 }
                 else if (g_board.isStalemate(nextTurn)) { g_gameOver = true; snprintf(g_statusMsg, sizeof(g_statusMsg), "STALEMATE! Draw."); }
                 else if (g_board.isInCheck(nextTurn)) { snprintf(g_statusMsg, sizeof(g_statusMsg), "CHECK! Your turn."); }
-                else { snprintf(g_statusMsg, sizeof(g_statusMsg), "Opponent moved. Your turn."); }
+                else { snprintf(g_statusMsg, sizeof(g_statusMsg), "Opponent moved. Your turn!"); }
                 break;
             }
         }
@@ -766,12 +777,6 @@ void drawTitle(const char* text, int y, int fontSize, Color color) {
     DrawRectanglePro({(float)(SCREEN_WIDTH/2), (float)(y + fontSize + 9), 8, 8}, {4, 4}, 45.0f, COL_ACCENT);
 }
 
-// ─── Game Loop Variables ──────────────────────────────────────────────────────
-int selectedRow = -1;
-int selectedCol = -1;
-int hintDestRow = -1;
-int hintDestCol = -1;
-
 // ─── Clipboard Copy (Win32) ───────────────────────────────────────────────────
 void copyToClipboard(const char* text) {
     SetClipboardText(text);
@@ -804,6 +809,45 @@ void buildMoveListString(char* out, int maxLen) {
             pos += snprintf(out + pos, maxLen - pos, " ");
         } else {
             pos += snprintf(out + pos, maxLen - pos, "  ");
+        }
+    }
+}
+
+void tryExecuteMove(int fromR, int fromC, int toR, int toC) {
+    MoveList legal = g_board.getLegalMoves(g_board.state.currentTurn);
+    for (int i = 0; i < legal.count; i++) {
+        Move m = legal.moves[i];
+        if (m.fromRow == fromR && m.fromCol == fromC && m.toRow == toR && m.toCol == toC) {
+            g_board.applyMove(m);
+            if (g_isOnline) {
+                sendMoveOnline(m);
+                g_myTurnOnline = false;
+            }
+            selectedRow = -1;
+            selectedCol = -1;
+            
+            PieceColor nextTurn = g_board.state.currentTurn;
+            if (g_board.isCheckmate(nextTurn)) { 
+                g_gameOver = true;
+                const char* winner = (nextTurn == P_WHITE) ? "Black" : "White";
+                snprintf(g_statusMsg, sizeof(g_statusMsg), "CHECKMATE! %s Won!", winner);
+                User* u = g_auth.getCurrentUser();
+                if (g_rankedPvp && g_player2 != nullptr && u != nullptr) {
+                    if (nextTurn == P_BLACK) {
+                        g_auth.addExp(*u, 50);
+                        g_auth.addExp(*g_player2, -20);
+                    } else {
+                        g_auth.addExp(*g_player2, 50);
+                        g_auth.addExp(*u, -20);
+                    }
+                } else if (u) {
+                    g_auth.addPoints(*u, 150);
+                }
+            }
+            else if (g_board.isStalemate(nextTurn)) { g_gameOver = true; snprintf(g_statusMsg, sizeof(g_statusMsg), "STALEMATE! Draw."); }
+            else if (g_board.isInCheck(nextTurn)) { snprintf(g_statusMsg, sizeof(g_statusMsg), "CHECK!"); }
+            else { snprintf(g_statusMsg, sizeof(g_statusMsg), "Move played."); }
+            return;
         }
     }
 }
@@ -848,78 +892,60 @@ void handleGameInput() {
         return;
     }
 
-
     if (g_isOnline && !g_myTurnOnline) {
         // Not our turn, ignore clicks
         return;
     }
-    if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
 
-        hintDestRow = -1; hintDestCol = -1;
-        Vector2 mouse = GetMousePosition();
-        int c = (int)(mouse.x - BOARD_X) / CELL_SIZE;
-        int r = (BOARD_SIZE - (int)(mouse.y - BOARD_Y)) / CELL_SIZE;
+    bool flipBoard = g_isOnline ? (g_playerColor == P_BLACK) : (!g_vsAI && (g_board.state.currentTurn == P_BLACK));
 
-        bool flipBoard = g_isOnline ? (g_playerColor == P_BLACK) : (!g_vsAI && (g_board.state.currentTurn == P_BLACK));
-        if (flipBoard) {
-            c = 7 - c;
-            r = 7 - r;
+    Vector2 mouse = GetMousePosition();
+    int hoverC = -1, hoverR = -1;
+    if (mouse.x >= BOARD_X && mouse.x < BOARD_X + BOARD_SIZE &&
+        mouse.y >= BOARD_Y && mouse.y < BOARD_Y + BOARD_SIZE) {
+        int dispC = (int)(mouse.x - BOARD_X) / CELL_SIZE;
+        int dispR = 7 - (int)(mouse.y - BOARD_Y) / CELL_SIZE;
+        if (dispC >= 0 && dispC < 8 && dispR >= 0 && dispR < 8) {
+            hoverC = flipBoard ? (7 - dispC) : dispC;
+            hoverR = flipBoard ? (7 - dispR) : dispR;
         }
+    }
 
-        if (c >= 0 && c < 8 && r >= 0 && r < 8) {
+    if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
+        hintDestRow = -1; hintDestCol = -1;
+        if (hoverC >= 0 && hoverR >= 0) {
+            PieceColor curTurn = g_board.state.currentTurn;
+            PieceColor myColor = g_isOnline ? g_playerColor : curTurn;
+
             if (selectedRow == -1) {
-                if (g_board.at(r, c).color == g_board.state.currentTurn) {
-                    selectedRow = r; selectedCol = c;
+                if (g_board.at(hoverR, hoverC).color == curTurn &&
+                    (!g_isOnline || g_board.at(hoverR, hoverC).color == myColor)) {
+                    selectedRow = hoverR;
+                    selectedCol = hoverC;
                 }
             } else {
-                MoveList legal = g_board.getLegalMoves(g_board.state.currentTurn);
-                bool valid = false;
-                for (int i = 0; i < legal.count; i++) {
-                    Move m = legal.moves[i];
-                    if (m.fromRow == selectedRow && m.fromCol == selectedCol && m.toRow == r && m.toCol == c) {
-                        g_board.applyMove(m);
-                        if (g_isOnline) {
-                            sendMoveOnline(m);
-                            g_myTurnOnline = false;
-                        }
-                        valid = true;
-                        selectedRow = -1; selectedCol = -1;
-                        
-                        PieceColor nextTurn = g_board.state.currentTurn;
-                        if (g_board.isCheckmate(nextTurn)) { 
-                            g_gameOver = true;
-                            const char* winner = (nextTurn == P_WHITE) ? "Black" : "White";
-                            snprintf(g_statusMsg, sizeof(g_statusMsg), "CHECKMATE! %s Won!", winner);
-                            User* u = g_auth.getCurrentUser();
-                            if (g_rankedPvp && g_player2 != nullptr && u != nullptr) {
-                                if (nextTurn == P_BLACK) {
-                                    g_auth.addExp(*u, 50);
-                                    g_auth.addExp(*g_player2, -20);
-                                } else {
-                                    g_auth.addExp(*g_player2, 50);
-                                    g_auth.addExp(*u, -20);
-                                }
-                            } else if (u) {
-                                g_auth.addPoints(*u, 150);
-                            }
-                        }
-                        else if (g_board.isStalemate(nextTurn)) { g_gameOver = true; snprintf(g_statusMsg, sizeof(g_statusMsg), "STALEMATE! Draw."); }
-                        else if (g_board.isInCheck(nextTurn)) { snprintf(g_statusMsg, sizeof(g_statusMsg), "CHECK!"); }
-                        else { snprintf(g_statusMsg, sizeof(g_statusMsg), "Move played."); }
-                        
-                        break;
-                    }
-                }
-                if (!valid) {
-                    if (g_board.at(r, c).color == g_board.state.currentTurn) {
-                        selectedRow = r; selectedCol = c;
-                    } else {
-                        selectedRow = -1; selectedCol = -1;
+                if (g_board.at(hoverR, hoverC).color == curTurn &&
+                    (!g_isOnline || g_board.at(hoverR, hoverC).color == myColor)) {
+                    selectedRow = hoverR;
+                    selectedCol = hoverC;
+                } else {
+                    int prevR = selectedRow, prevC = selectedCol;
+                    tryExecuteMove(prevR, prevC, hoverR, hoverC);
+                    if (selectedRow == prevR && selectedCol == prevC) {
+                        selectedRow = -1;
+                        selectedCol = -1;
                     }
                 }
             }
         } else {
-            selectedRow = -1; selectedCol = -1;
+            selectedRow = -1;
+            selectedCol = -1;
+        }
+    }
+    else if (IsMouseButtonReleased(MOUSE_LEFT_BUTTON)) {
+        if (selectedRow != -1 && hoverC >= 0 && hoverR >= 0 &&
+            (hoverR != selectedRow || hoverC != selectedCol)) {
+            tryExecuteMove(selectedRow, selectedCol, hoverR, hoverC);
         }
     }
 }

@@ -137,29 +137,10 @@
             console.error("WebGL error:", e);
         }
 
-        // Mobile touch input forwarding
-        function setupTouch(el) {
-            function triggerMouse(e, type) {
-                var touch = e.changedTouches[0];
-                var simulated = new MouseEvent(type, {
-                    bubbles: true,
-                    cancelable: true,
-                    view: window,
-                    clientX: touch.clientX,
-                    clientY: touch.clientY,
-                    screenX: touch.screenX,
-                    screenY: touch.screenY,
-                    button: 0,
-                    buttons: (type === "mouseup") ? 0 : 1
-                });
-                el.dispatchEvent(simulated);
-                if (e.cancelable) e.preventDefault();
-            }
-            el.addEventListener("touchstart", function(e) { triggerMouse(e, "mousedown"); }, {passive: false});
-            el.addEventListener("touchmove", function(e) { triggerMouse(e, "mousemove"); }, {passive: false});
-            el.addEventListener("touchend", function(e) { triggerMouse(e, "mouseup"); }, {passive: false});
-        }
-        setupTouch(canvas);
+        // Prevent mobile browser gesture scrolling/zooming while interacting with the chess canvas
+        canvas.addEventListener("touchstart", function(e) { if (e.cancelable) e.preventDefault(); }, {passive: false});
+        canvas.addEventListener("touchmove", function(e) { if (e.cancelable) e.preventDefault(); }, {passive: false});
+        canvas.addEventListener("touchend", function(e) { if (e.cancelable) e.preventDefault(); }, {passive: false});
 
         var Module = {
             preinitializedWebGLContext: gl,
