@@ -111,6 +111,15 @@ char g_onlineJoinCode[16] = "";
 bool g_onlineJoinActive = false;
 char g_onlineMsg[128] = "";
 
+enum OnlineMenuState {
+    ONLINE_MENU_DEFAULT = 0,
+    ONLINE_MENU_WAITING = 1,
+    ONLINE_MENU_CONNECTING = 2
+};
+OnlineMenuState g_onlineMenuState = ONLINE_MENU_DEFAULT;
+bool g_copiedRoomCode = false;
+float g_copiedRoomTimer = 0.0f;
+
 bool          g_gameOver   = false;
 char          g_statusMsg[128] = "";
 
@@ -177,13 +186,18 @@ Texture2D texLines[7];     // [type]: glowing gold engraved linework
 extern "C" {
     void onRoomCreated(const char* roomId) {
         snprintf(g_onlineRoomCode, sizeof(g_onlineRoomCode), "%s", roomId);
-        snprintf(g_onlineMsg, sizeof(g_onlineMsg), "Room created: %s. Waiting for opponent...", roomId);
+        snprintf(g_onlineMsg, sizeof(g_onlineMsg), "Room created successfully!");
+        g_onlineMenuState = ONLINE_MENU_WAITING;
+        g_copiedRoomCode = false;
     }
-    void onRoomJoined(const char* colorStr) {
-        snprintf(g_onlineMsg, sizeof(g_onlineMsg), "Joined successfully! You are %s", colorStr);
+    void onRoomJoined(const char* colorStr, const char* roomId = "") {
+        if (roomId && strlen(roomId) > 0) {
+            snprintf(g_onlineRoomCode, sizeof(g_onlineRoomCode), "%s", roomId);
+        }
         g_isOnline = true;
         g_vsAI = false;
         g_appState = STATE_GAME;
+        g_onlineMenuState = ONLINE_MENU_DEFAULT;
         g_board.init();
         g_gameOver = false;
         
@@ -194,17 +208,18 @@ extern "C" {
             g_playerColor = P_BLACK;
             g_myTurnOnline = false;
         }
-        snprintf(g_statusMsg, sizeof(g_statusMsg), "Game started! You are %s.", colorStr);
+        snprintf(g_statusMsg, sizeof(g_statusMsg), "Game started! You play as %s.", (g_playerColor == P_WHITE) ? "White" : "Black");
     }
     void onOpponentJoined() {
         g_isOnline = true;
         g_vsAI = false;
         g_appState = STATE_GAME;
+        g_onlineMenuState = ONLINE_MENU_DEFAULT;
         g_board.init();
         g_gameOver = false;
         g_playerColor = P_WHITE;
         g_myTurnOnline = true;
-        snprintf(g_statusMsg, sizeof(g_statusMsg), "Opponent joined! Game started.");
+        snprintf(g_statusMsg, sizeof(g_statusMsg), "Opponent connected! Your turn (White).");
     }
     void onOpponentDisconnected() {
         if (g_isOnline) {
@@ -212,15 +227,26 @@ extern "C" {
             snprintf(g_statusMsg, sizeof(g_statusMsg), "Opponent disconnected. You win!");
         }
     }
+    void onOpponentResigned() {
+        if (g_isOnline) {
+            g_gameOver = true;
+            snprintf(g_statusMsg, sizeof(g_statusMsg), "Opponent resigned! YOU WIN!");
+        }
+    }
     void applyOpponentMove(int fromRow, int fromCol, int toRow, int toCol, int promoteTo) {
-        Move m;
-        m.fromRow = fromRow; m.fromCol = fromCol; m.toRow = toRow; m.toCol = toCol;
-        // Verify move is legal
+        g_viewingMoveIdx = -1;
         MoveList legal = g_board.getLegalMoves(g_board.state.currentTurn);
         for(int i = 0; i < legal.count; i++) {
             if(legal.moves[i].fromRow == fromRow && legal.moves[i].fromCol == fromCol &&
                legal.moves[i].toRow == toRow && legal.moves[i].toCol == toCol) {
-                g_board.applyMove(legal.moves[i]);
+                if (legal.moves[i].isPromotion && promoteTo > 0 && legal.moves[i].promoteTo != (PieceType)promoteTo) {
+                    continue;
+                }
+                Move m = legal.moves[i];
+                if (m.isPromotion && promoteTo > 0) {
+                    m.promoteTo = (PieceType)promoteTo;
+                }
+                g_board.applyMove(m);
                 g_myTurnOnline = true;
                 
                 PieceColor nextTurn = g_board.state.currentTurn;
@@ -236,27 +262,55 @@ extern "C" {
         }
     }
     void onWsError(const char* msg) {
-        snprintf(g_onlineMsg, sizeof(g_onlineMsg), "Error: %s", msg);
+        snprintf(g_onlineMsg, sizeof(g_onlineMsg), "%s", msg);
+        g_onlineMenuState = ONLINE_MENU_DEFAULT;
+    }
+    void setOnlineJoinCode(const char* code) {
+        snprintf(g_onlineJoinCode, sizeof(g_onlineJoinCode), "%s", code);
     }
 }
 
 void initWebSocketAndCreateRoom() {
 #ifdef __EMSCRIPTEN__
     EM_ASM({
-        if (window.socket) window.socket.close();
-        var ws_url = 'ws://' + window.location.hostname + ':8765';
-        window.socket = new WebSocket(ws_url);
-        window.socket.onopen = function() {
-            window.socket.send(JSON.stringify({action: "create_room"}));
-        };
-        window.socket.onmessage = function(event) {
-            var data = JSON.parse(event.data);
-            if(data.type === 'room_created') { ccall('onRoomCreated', 'void', ['string'], [data.room_id]); }
-            if(data.type === 'opponent_joined') { ccall('onOpponentJoined', 'void', [], []); }
-            if(data.type === 'move') { ccall('applyOpponentMove', 'void', ['number', 'number', 'number', 'number', 'number'], [data.move.fromRow, data.move.fromCol, data.move.toRow, data.move.toCol, data.move.promoteTo]); }
-            if(data.type === 'opponent_disconnected') { ccall('onOpponentDisconnected', 'void', [], []); }
-            if(data.type === 'error') { ccall('onWsError', 'void', ['string'], [data.message]); }
-        };
+        if (window.socket) {
+            try { window.socket.close(); } catch(e) {}
+            window.socket = null;
+        }
+        var loc = window.location;
+        var proto = (loc.protocol === 'https:') ? 'wss:' : 'ws:';
+        var ws_url = window.CHESS_WS_URL || (proto + '//' + loc.host + '/ws');
+
+        try {
+            window.socket = new WebSocket(ws_url);
+            window.socket.onopen = function() {
+                window.socket.send(JSON.stringify({action: "create_room"}));
+            };
+            window.socket.onerror = function(err) {
+                console.error("WebSocket error:", err);
+                ccall('onWsError', 'void', ['string'], ["Could not connect to online server."]);
+            };
+            window.socket.onmessage = function(event) {
+                var data = JSON.parse(event.data);
+                if (data.type === 'room_created') {
+                    ccall('onRoomCreated', 'void', ['string'], [data.room_id]);
+                } else if (data.type === 'opponent_joined') {
+                    ccall('onOpponentJoined', 'void', [], []);
+                } else if (data.type === 'move') {
+                    ccall('applyOpponentMove', 'void', ['number', 'number', 'number', 'number', 'number'],
+                          [data.move.fromRow, data.move.fromCol, data.move.toRow, data.move.toCol, data.move.promoteTo]);
+                } else if (data.type === 'opponent_resigned') {
+                    ccall('onOpponentResigned', 'void', [], []);
+                } else if (data.type === 'opponent_disconnected') {
+                    ccall('onOpponentDisconnected', 'void', [], []);
+                } else if (data.type === 'error') {
+                    ccall('onWsError', 'void', ['string'], [data.message]);
+                }
+            };
+        } catch(e) {
+            console.error("WS init exception:", e);
+            ccall('onWsError', 'void', ['string'], ["Failed to initialize connection."]);
+        }
     });
 #endif
 }
@@ -264,19 +318,43 @@ void initWebSocketAndCreateRoom() {
 void initWebSocketAndJoinRoom(const char* roomId) {
 #ifdef __EMSCRIPTEN__
     EM_ASM({
-        if (window.socket) window.socket.close();
-        var ws_url = 'ws://' + window.location.hostname + ':8765';
-        window.socket = new WebSocket(ws_url);
-        window.socket.onopen = function() {
-            window.socket.send(JSON.stringify({action: "join_room", room_id: UTF8ToString($0)}));
-        };
-        window.socket.onmessage = function(event) {
-            var data = JSON.parse(event.data);
-            if(data.type === 'room_joined') { ccall('onRoomJoined', 'void', ['string'], [data.color]); }
-            if(data.type === 'move') { ccall('applyOpponentMove', 'void', ['number', 'number', 'number', 'number', 'number'], [data.move.fromRow, data.move.fromCol, data.move.toRow, data.move.toCol, data.move.promoteTo]); }
-            if(data.type === 'opponent_disconnected') { ccall('onOpponentDisconnected', 'void', [], []); }
-            if(data.type === 'error') { ccall('onWsError', 'void', ['string'], [data.message]); }
-        };
+        if (window.socket) {
+            try { window.socket.close(); } catch(e) {}
+            window.socket = null;
+        }
+        var loc = window.location;
+        var proto = (loc.protocol === 'https:') ? 'wss:' : 'ws:';
+        var ws_url = window.CHESS_WS_URL || (proto + '//' + loc.host + '/ws');
+        var rId = UTF8ToString($0).trim().toUpperCase();
+
+        try {
+            window.socket = new WebSocket(ws_url);
+            window.socket.onopen = function() {
+                window.socket.send(JSON.stringify({action: "join_room", room_id: rId}));
+            };
+            window.socket.onerror = function(err) {
+                console.error("WebSocket error:", err);
+                ccall('onWsError', 'void', ['string'], ["Could not connect to online server."]);
+            };
+            window.socket.onmessage = function(event) {
+                var data = JSON.parse(event.data);
+                if (data.type === 'room_joined') {
+                    ccall('onRoomJoined', 'void', ['string', 'string'], [data.color, data.room_id || ""]);
+                } else if (data.type === 'move') {
+                    ccall('applyOpponentMove', 'void', ['number', 'number', 'number', 'number', 'number'],
+                          [data.move.fromRow, data.move.fromCol, data.move.toRow, data.move.toCol, data.move.promoteTo]);
+                } else if (data.type === 'opponent_resigned') {
+                    ccall('onOpponentResigned', 'void', [], []);
+                } else if (data.type === 'opponent_disconnected') {
+                    ccall('onOpponentDisconnected', 'void', [], []);
+                } else if (data.type === 'error') {
+                    ccall('onWsError', 'void', ['string'], [data.message]);
+                }
+            };
+        } catch(e) {
+            console.error("WS join exception:", e);
+            ccall('onWsError', 'void', ['string'], ["Failed to initialize connection."]);
+        }
     }, roomId);
 #endif
 }
@@ -294,6 +372,89 @@ void sendMoveOnline(Move m) {
             }));
         }
     }, g_onlineRoomCode, m.fromRow, m.fromCol, m.toRow, m.toCol, m.promoteTo);
+#endif
+}
+
+void sendResignOnline() {
+#ifdef __EMSCRIPTEN__
+    EM_ASM({
+        if (window.socket && window.socket.readyState === WebSocket.OPEN) {
+            window.socket.send(JSON.stringify({
+                action: "resign",
+                room_id: UTF8ToString($0)
+            }));
+        }
+    }, g_onlineRoomCode);
+#endif
+}
+
+void sendLeaveRoomOnline() {
+#ifdef __EMSCRIPTEN__
+    EM_ASM({
+        if (window.socket) {
+            try {
+                if (window.socket.readyState === WebSocket.OPEN) {
+                    window.socket.send(JSON.stringify({
+                        action: "leave_room",
+                        room_id: UTF8ToString($0)
+                    }));
+                }
+                window.socket.close();
+            } catch(e) {}
+            window.socket = null;
+        }
+    }, g_onlineRoomCode);
+#endif
+    g_isOnline = false;
+    g_onlineRoomCode[0] = '\0';
+    g_onlineMenuState = ONLINE_MENU_DEFAULT;
+}
+
+void copyRoomCodeToClipboard(const char* code) {
+#ifdef __EMSCRIPTEN__
+    EM_ASM({
+        var text = UTF8ToString($0);
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).catch(function(e){});
+        } else {
+            var ta = document.createElement("textarea");
+            ta.value = text;
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand("copy");
+            document.body.removeChild(ta);
+        }
+    }, code);
+#endif
+    g_copiedRoomCode = true;
+    g_copiedRoomTimer = 2.5f;
+}
+
+void pasteRoomCodeFromClipboard() {
+#ifdef __EMSCRIPTEN__
+    EM_ASM({
+        function promptFallback() {
+            var input = window.prompt("Enter 5-character Room Code:");
+            if (input) {
+                var clean = input.trim().toUpperCase().substring(0, 10);
+                ccall('setOnlineJoinCode', 'void', ['string'], [clean]);
+            }
+        }
+        if (navigator.clipboard && navigator.clipboard.readText) {
+            navigator.clipboard.readText().then(function(text) {
+                if (text && text.trim().length > 0) {
+                    var clean = text.trim().toUpperCase().substring(0, 10);
+                    ccall('setOnlineJoinCode', 'void', ['string'], [clean]);
+                } else {
+                    promptFallback();
+                }
+            }).catch(function(err) {
+                promptFallback();
+            });
+        } else {
+            promptFallback();
+        }
+    });
 #endif
 }
 
@@ -504,7 +665,7 @@ void drawThemedTextBox(Rectangle bounds, char* textBuf, int maxLen, bool active,
             }
             key = GetCharPressed();
         }
-        if (IsKeyPressed(KEY_BACKSPACE)) {
+        if (IsKeyPressed(KEY_BACKSPACE) || IsKeyPressedRepeat(KEY_BACKSPACE)) {
             int len = (int)strlen(textBuf);
             if (len > 0) textBuf[len-1] = '\0';
         }
@@ -699,7 +860,7 @@ void handleGameInput() {
         int c = (int)(mouse.x - BOARD_X) / CELL_SIZE;
         int r = (BOARD_SIZE - (int)(mouse.y - BOARD_Y)) / CELL_SIZE;
 
-        bool flipBoard = !g_vsAI && (g_board.state.currentTurn == P_BLACK);
+        bool flipBoard = g_isOnline ? (g_playerColor == P_BLACK) : (!g_vsAI && (g_board.state.currentTurn == P_BLACK));
         if (flipBoard) {
             c = 7 - c;
             r = 7 - r;
@@ -775,7 +936,7 @@ void drawGame() {
     bool viewingHistory = (g_viewingMoveIdx >= 0 && g_viewingMoveIdx < g_board.snapshotCount);
     const GameState& renderState = viewingHistory ? g_board.getSnapshot(g_viewingMoveIdx) : g_board.state;
 
-    bool flipBoard = !g_vsAI && (renderState.currentTurn == P_BLACK);
+    bool flipBoard = g_isOnline ? (g_playerColor == P_BLACK) : (!g_vsAI && (renderState.currentTurn == P_BLACK));
 
     // Draw Board
     Color colLight = { 240, 217, 181, 255 };
@@ -862,54 +1023,84 @@ void drawGame() {
         DrawText(viewLabel, BOARD_X + (BOARD_SIZE - vw) / 2, BOARD_Y - 30, 20, Fade(SKYBLUE, 0.9f));
     }
     
-    // Status
-    DrawText(g_statusMsg, 20, 20, 20, COL_TEXT_DIM);
+    // Status & Room Info
+    if (g_isOnline) {
+        char onlineTop[128];
+        snprintf(onlineTop, sizeof(onlineTop), "ROOM: [%s]   |   YOU PLAY AS %s", 
+                 g_onlineRoomCode, (g_playerColor == P_WHITE) ? "WHITE" : "BLACK");
+        DrawText(onlineTop, 20, 15, 20, COL_ACCENT);
+
+        if (g_gameOver) {
+            DrawText(g_statusMsg, 20, 42, 20, COL_ACCENT);
+        } else if (g_myTurnOnline) {
+            DrawText("YOUR TURN - Click a piece to move", 20, 42, 20, COL_SUCCESS);
+        } else {
+            DrawText("Opponent is thinking...", 20, 42, 20, COL_TEXT_DIM);
+        }
+    } else {
+        DrawText(g_statusMsg, 20, 20, 20, COL_TEXT_DIM);
+    }
     
     // ─── Bottom Buttons ──────────────────────────────────────────────────────
     float btnY = (float)SCREEN_HEIGHT - 60;
     float btnX = 20;
 
-    if (drawThemedButton({btnX, btnY, 80, 40}, "Undo")) {
-        g_viewingMoveIdx = -1;
-        g_board.undoMove();
-        if (g_vsAI && !stack_is_empty(g_board.history)) g_board.undoMove();
-        g_gameOver = false;
-        snprintf(g_statusMsg, sizeof(g_statusMsg), "Move undone.");
+    if (!g_isOnline) {
+        if (drawThemedButton({btnX, btnY, 80, 40}, "Undo")) {
+            g_viewingMoveIdx = -1;
+            g_board.undoMove();
+            if (g_vsAI && !stack_is_empty(g_board.history)) g_board.undoMove();
+            g_gameOver = false;
+            snprintf(g_statusMsg, sizeof(g_statusMsg), "Move undone.");
+        }
+        btnX += 90;
     }
-    btnX += 90;
-    
-    if (drawThemedButton({btnX, btnY, 80, 40}, "Menu")) {
+
+    if (drawThemedButton({btnX, btnY, 80, 40}, g_isOnline ? "Leave" : "Menu")) {
+        if (g_isOnline) {
+            sendLeaveRoomOnline();
+        }
         g_viewingMoveIdx = -1;
         g_appState = STATE_MAIN_MENU;
     }
     btnX += 90;
 
-    if (drawThemedButton({btnX, btnY, 80, 40}, "Resign")) {
-        g_viewingMoveIdx = -1;
-        g_gameOver = true;
-        snprintf(g_statusMsg, sizeof(g_statusMsg), "You resigned. %s wins!", g_board.state.currentTurn == P_WHITE ? "BLACK" : "WHITE");
+    if (drawThemedButton({btnX, btnY, 80, 40}, "Resign", false, 16)) {
+        if (g_isOnline) {
+            if (!g_gameOver) {
+                sendResignOnline();
+                g_gameOver = true;
+                snprintf(g_statusMsg, sizeof(g_statusMsg), "You resigned. Opponent wins!");
+            }
+        } else {
+            g_viewingMoveIdx = -1;
+            g_gameOver = true;
+            snprintf(g_statusMsg, sizeof(g_statusMsg), "You resigned. %s wins!", g_board.state.currentTurn == P_WHITE ? "BLACK" : "WHITE");
+        }
     }
     btnX += 90;
 
-    char hintBtnText[32];
-    char hintRem[16];
-    HintEngine::hintLabel(g_hintLimit, hintRem);
-    snprintf(hintBtnText, sizeof(hintBtnText), "Hint(%s)", hintRem);
-    if (drawThemedButton({btnX, btnY, 100, 40}, hintBtnText)) {
-        if (!g_gameOver && g_hintLimit.canUse()) {
-            Move m = HintEngine::getHint(g_board, g_board.state.currentTurn, g_hintLimit);
-            if (m.fromRow != -1) {
-                g_viewingMoveIdx = -1;
-                selectedRow = m.fromRow;
-                selectedCol = m.fromCol;
-                hintDestRow = m.toRow;
-                hintDestCol = m.toCol;
-                snprintf(g_statusMsg, sizeof(g_statusMsg), "Hint: Move %c%d to %c%d (Blue)", 
-                         'a' + m.fromCol, m.fromRow + 1, 'a' + m.toCol, m.toRow + 1);
+    if (!g_isOnline) {
+        char hintBtnText[32];
+        char hintRem[16];
+        HintEngine::hintLabel(g_hintLimit, hintRem);
+        snprintf(hintBtnText, sizeof(hintBtnText), "Hint(%s)", hintRem);
+        if (drawThemedButton({btnX, btnY, 100, 40}, hintBtnText)) {
+            if (!g_gameOver && g_hintLimit.canUse()) {
+                Move m = HintEngine::getHint(g_board, g_board.state.currentTurn, g_hintLimit);
+                if (m.fromRow != -1) {
+                    g_viewingMoveIdx = -1;
+                    selectedRow = m.fromRow;
+                    selectedCol = m.fromCol;
+                    hintDestRow = m.toRow;
+                    hintDestCol = m.toCol;
+                    snprintf(g_statusMsg, sizeof(g_statusMsg), "Hint: Move %c%d to %c%d (Blue)", 
+                             'a' + m.fromCol, m.fromRow + 1, 'a' + m.toCol, m.toRow + 1);
+                }
             }
         }
+        btnX += 110;
     }
-    btnX += 110;
 
     if (drawThemedButton({btnX, btnY, 70, 40}, "< Prev") || IsKeyPressed(KEY_LEFT)) {
         if (g_viewingMoveIdx < 0) {
@@ -1055,7 +1246,7 @@ void drawLogin() {
     
     // Login card
     float cardW = 420;
-    float cardH = 340;
+    float cardH = 375;
     float cardX = SCREEN_WIDTH/2 - cardW/2;
     float cardY = baseY + 120;
     
@@ -1083,25 +1274,19 @@ void drawLogin() {
     drawThemedTextBox({cardX + 30, cardY + 100, cardW - 60, 42}, g_usernameInput, 32, g_usernameActive);
 
     // Password with eye toggle
-    DrawText("Password", (int)(cardX + 30), (int)(cardY + 160), 18, COL_TEXT_DIM);
-    drawThemedTextBox({cardX + 30, cardY + 185, cardW - 105, 42}, g_passwordInput, 32, !g_usernameActive, true, g_showPassword);
+    DrawText("Password", (int)(cardX + 30), (int)(cardY + 155), 18, COL_TEXT_DIM);
+    drawThemedTextBox({cardX + 30, cardY + 180, cardW - 105, 42}, g_passwordInput, 32, !g_usernameActive, true, g_showPassword);
     
     // Eye toggle button
-    if (drawIconButton({cardX + cardW - 65, cardY + 185, 42, 42}, g_showPassword ? "Hide" : "Show")) {
+    if (drawIconButton({cardX + cardW - 65, cardY + 180, 42, 42}, g_showPassword ? "Hide" : "Show")) {
         g_showPassword = !g_showPassword;
     }
 
     // Toggle active box on click
-
-    if (g_isOnline && !g_myTurnOnline) {
-        // Not our turn, ignore clicks
-        return;
-    }
     if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
-
         Vector2 mouse = GetMousePosition();
         if (CheckCollisionPointRec(mouse, {cardX + 30, cardY + 100, cardW - 60, 42})) g_usernameActive = true;
-        else if (CheckCollisionPointRec(mouse, {cardX + 30, cardY + 185, cardW - 105, 42})) g_usernameActive = false;
+        else if (CheckCollisionPointRec(mouse, {cardX + 30, cardY + 180, cardW - 105, 42})) g_usernameActive = false;
     }
     
     // Tab to switch fields
@@ -1109,7 +1294,10 @@ void drawLogin() {
 
     // Buttons
     float btnW = (cardW - 80) / 2;
-    if (drawThemedButton({cardX + 30, cardY + 250, btnW, 45}, "Login", true)) {
+    bool triggerLogin = drawThemedButton({cardX + 30, cardY + 240, btnW, 42}, "Login", true);
+    if (IsKeyPressed(KEY_ENTER)) triggerLogin = true;
+
+    if (triggerLogin) {
         User* u = g_auth.login(g_usernameInput, g_passwordInput);
         if (u) {
             g_appState = STATE_MAIN_MENU;
@@ -1119,7 +1307,7 @@ void drawLogin() {
         }
     }
 
-    if (drawThemedButton({cardX + 50 + btnW, cardY + 250, btnW, 45}, "Register")) {
+    if (drawThemedButton({cardX + 50 + btnW, cardY + 240, btnW, 42}, "Register")) {
         if (g_auth.registerUser(g_usernameInput, g_passwordInput)) {
             strcpy(g_loginMsg, "Registered! Now login.");
         } else {
@@ -1127,12 +1315,25 @@ void drawLogin() {
         }
     }
 
+    // Guest Play Button
+    if (drawThemedButton({cardX + 30, cardY + 295, cardW - 60, 38}, "Play as Guest (Quick Play)", false, 16)) {
+        User* u = g_auth.login("Guest", "guest");
+        if (!u) {
+            g_auth.registerUser("Guest", "guest");
+            u = g_auth.login("Guest", "guest");
+        }
+        if (u) {
+            g_appState = STATE_MAIN_MENU;
+            g_loginMsg[0] = '\0';
+        }
+    }
+
     // Feedback message inside the card
     if (g_loginMsg[0] != '\0') {
         Color msgCol = COL_DANGER;
         if (strstr(g_loginMsg, "Registered")) msgCol = COL_SUCCESS;
-        int mw = MeasureText(g_loginMsg, 16);
-        DrawText(g_loginMsg, (int)(cardX + cardW/2 - mw/2), (int)(cardY + 306), 16, msgCol);
+        int mw = MeasureText(g_loginMsg, 15);
+        DrawText(g_loginMsg, (int)(cardX + cardW/2 - mw/2), (int)(cardY + 346), 15, msgCol);
     }
 
     // Quit — cleanly below the card
@@ -1304,13 +1505,7 @@ void drawP2Login() {
         g_showP2Password = !g_showP2Password;
     }
 
-
-    if (g_isOnline && !g_myTurnOnline) {
-        // Not our turn, ignore clicks
-        return;
-    }
     if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
-
         Vector2 mouse = GetMousePosition();
         if (CheckCollisionPointRec(mouse, {cardX + 30, cardY + 95, cardW - 60, 42})) g_p2UsernameActive = true;
         else if (CheckCollisionPointRec(mouse, {cardX + 30, cardY + 180, cardW - 105, 42})) g_p2UsernameActive = false;
@@ -1419,36 +1614,195 @@ void drawProfilePicSelection() {
 
 void drawOnlineMenu() {
     drawChessBackground();
-    drawTitle("ONLINE MULTIPLAYER", 40, 50, COL_ACCENT);
+
+    // Timer for copy feedback
+    if (g_copiedRoomCode) {
+        g_copiedRoomTimer -= GetFrameTime();
+        if (g_copiedRoomTimer <= 0.0f) g_copiedRoomCode = false;
+    }
 
     float cx = SCREEN_WIDTH / 2.0f;
     float cy = SCREEN_HEIGHT / 2.0f;
 
-    DrawText(g_onlineMsg, (int)(cx - MeasureText(g_onlineMsg, 20)/2), (int)(cy - 120), 20, COL_SUCCESS);
+    drawTitle("ONLINE MULTIPLAYER", 36, 44, COL_ACCENT);
+
+    const char* sub = "Play live chess across PC and Mobile via Room Codes";
+    DrawText(sub, (int)(cx - MeasureText(sub, 18) / 2), 92, 18, COL_TEXT_DIM);
+
+    // Alert / Status message bar if any
+    if (strlen(g_onlineMsg) > 0) {
+        Color msgCol = (strncmp(g_onlineMsg, "Error", 5) == 0 || strstr(g_onlineMsg, "not found") || strstr(g_onlineMsg, "full") || strstr(g_onlineMsg, "Could not")) ? COL_DANGER : COL_SUCCESS;
+        int mw = MeasureText(g_onlineMsg, 18);
+        DrawRectangleRounded({cx - mw/2.0f - 16, 122, (float)mw + 32, 34}, 0.2f, 4, Fade(msgCol, 0.15f));
+        DrawRectangleRoundedLinesEx({cx - mw/2.0f - 16, 122, (float)mw + 32, 34}, 0.2f, 4, 1.5f, msgCol);
+        DrawText(g_onlineMsg, (int)(cx - mw / 2), 130, 18, msgCol);
+    }
 
 #ifdef __EMSCRIPTEN__
-    if (drawThemedButton({cx - 100, cy - 60, 200, 45}, "Create Room")) {
-        initWebSocketAndCreateRoom();
-    }
+    if (g_onlineMenuState == ONLINE_MENU_WAITING) {
+        // ─── WAITING ROOM CARD ─────────────────────────────────────────────
+        float cardW = 460.0f;
+        float cardH = 350.0f;
+        float cardX = cx - cardW / 2.0f;
+        float cardY = cy - cardH / 2.0f + 30.0f;
 
-    DrawText("OR", (int)(cx - MeasureText("OR", 20)/2), (int)(cy), 20, COL_TEXT_DIM);
+        DrawRectangleRounded({cardX, cardY, cardW, cardH}, 0.08f, 6, COL_BG_CARD);
+        DrawRectangleRoundedLinesEx({cardX, cardY, cardW, cardH}, 0.08f, 6, 2, COL_ACCENT);
 
-    drawThemedTextBox({cx - 100, cy + 30, 200, 45}, g_onlineJoinCode, 15, g_onlineJoinActive, false, false);
-    if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
-        g_onlineJoinActive = CheckCollisionPointRec(GetMousePosition(), {cx - 100, cy + 30, 200, 45});
-    }
+        DrawText("ROOM CREATED!", (int)(cx - MeasureText("ROOM CREATED!", 24) / 2), (int)(cardY + 25), 24, COL_ACCENT);
+        
+        const char* shareMsg = "Share this 5-character code with your opponent:";
+        DrawText(shareMsg, (int)(cx - MeasureText(shareMsg, 16) / 2), (int)(cardY + 62), 16, COL_TEXT_LIGHT);
 
-    if (drawThemedButton({cx - 100, cy + 90, 200, 45}, "Join Room")) {
-        if (strlen(g_onlineJoinCode) > 0) {
-            snprintf(g_onlineRoomCode, sizeof(g_onlineRoomCode), "%s", g_onlineJoinCode);
-            initWebSocketAndJoinRoom(g_onlineJoinCode);
+        // Big Code Badge
+        float badgeW = 260.0f;
+        float badgeH = 65.0f;
+        float badgeX = cx - badgeW / 2.0f;
+        float badgeY = cardY + 95.0f;
+        DrawRectangleRounded({badgeX, badgeY, badgeW, badgeH}, 0.15f, 6, COL_BG_DARKER);
+        DrawRectangleRoundedLinesEx({badgeX, badgeY, badgeW, badgeH}, 0.15f, 6, 2, COL_ACCENT);
+        
+        int codeW = MeasureText(g_onlineRoomCode, 38);
+        DrawText(g_onlineRoomCode, (int)(cx - codeW / 2), (int)(badgeY + 14), 38, COL_ACCENT);
+
+        // Copy Code Button
+        const char* copyBtnText = g_copiedRoomCode ? "COPIED TO CLIPBOARD!" : "COPY CODE";
+        if (drawThemedButton({cx - 110, cardY + 180, 220, 42}, copyBtnText, true, 17)) {
+            copyRoomCodeToClipboard(g_onlineRoomCode);
+        }
+
+        // Animated Waiting Text
+        int dotCount = ((int)(GetTime() * 2)) % 4;
+        char waitText[64];
+        snprintf(waitText, sizeof(waitText), "Waiting for opponent to connect%.*s", dotCount, "...");
+        DrawText(waitText, (int)(cx - MeasureText(waitText, 17) / 2), (int)(cardY + 242), 17, COL_TEXT_DIM);
+
+        // Cancel Button
+        if (drawThemedButton({cx - 80, cardY + 285, 160, 38}, "Cancel Room", false, 16)) {
+            sendLeaveRoomOnline();
+            g_onlineMsg[0] = '\0';
         }
     }
-#endif
+    else if (g_onlineMenuState == ONLINE_MENU_CONNECTING) {
+        // ─── CONNECTING CARD ───────────────────────────────────────────────
+        float cardW = 400.0f;
+        float cardH = 220.0f;
+        float cardX = cx - cardW / 2.0f;
+        float cardY = cy - cardH / 2.0f;
 
-    if (drawThemedButton({cx - 80, cy + 180, 160, 40}, "Back")) {
+        DrawRectangleRounded({cardX, cardY, cardW, cardH}, 0.08f, 6, COL_BG_CARD);
+        DrawRectangleRoundedLinesEx({cardX, cardY, cardW, cardH}, 0.08f, 6, 2, COL_ACCENT);
+
+        DrawText("CONNECTING...", (int)(cx - MeasureText("CONNECTING...", 24) / 2), (int)(cardY + 35), 24, COL_ACCENT);
+        
+        char connStr[64];
+        if (strcmp(g_onlineRoomCode, "...") == 0 || strlen(g_onlineRoomCode) == 0) {
+            snprintf(connStr, sizeof(connStr), "Creating private room on server...");
+        } else {
+            snprintf(connStr, sizeof(connStr), "Joining Room: %s", g_onlineRoomCode);
+        }
+        DrawText(connStr, (int)(cx - MeasureText(connStr, 18) / 2), (int)(cardY + 80), 18, COL_TEXT_LIGHT);
+
+        if (drawThemedButton({cx - 70, cardY + 140, 140, 38}, "Cancel", false, 16)) {
+            sendLeaveRoomOnline();
+            g_onlineMsg[0] = '\0';
+        }
+    }
+    else {
+        // ─── DEFAULT TWO-CARD LAYOUT ───────────────────────────────────────
+        float cardW = 340.0f;
+        float cardH = 340.0f;
+        float gap = 40.0f;
+        float card1X = cx - cardW - gap / 2.0f;
+        float card2X = cx + gap / 2.0f;
+        float cardY = cy - cardH / 2.0f + 25.0f;
+
+        // CARD 1: HOST MATCH
+        DrawRectangleRounded({card1X, cardY, cardW, cardH}, 0.08f, 6, COL_BG_CARD);
+        DrawRectangleRoundedLinesEx({card1X, cardY, cardW, cardH}, 0.08f, 6, 2, COL_SEPARATOR);
+
+        DrawText("CREATE A ROOM", (int)(card1X + cardW/2 - MeasureText("CREATE A ROOM", 22)/2), (int)(cardY + 30), 22, COL_ACCENT);
+        
+        const char* hostDesc1 = "Generate a private 5-digit code";
+        const char* hostDesc2 = "and invite your friend on";
+        const char* hostDesc3 = "Mobile or PC browser.";
+        DrawText(hostDesc1, (int)(card1X + cardW/2 - MeasureText(hostDesc1, 15)/2), (int)(cardY + 80), 15, COL_TEXT_DIM);
+        DrawText(hostDesc2, (int)(card1X + cardW/2 - MeasureText(hostDesc2, 15)/2), (int)(cardY + 105), 15, COL_TEXT_DIM);
+        DrawText(hostDesc3, (int)(card1X + cardW/2 - MeasureText(hostDesc3, 15)/2), (int)(cardY + 130), 15, COL_TEXT_DIM);
+
+        DrawText("You will play as WHITE", (int)(card1X + cardW/2 - MeasureText("You will play as WHITE", 16)/2), (int)(cardY + 180), 16, COL_TEXT_LIGHT);
+
+        if (drawThemedButton({card1X + 45, cardY + 240, cardW - 90, 48}, "Create Room", true, 19)) {
+            g_onlineMsg[0] = '\0';
+            g_onlineMenuState = ONLINE_MENU_CONNECTING;
+            snprintf(g_onlineRoomCode, sizeof(g_onlineRoomCode), "...");
+            initWebSocketAndCreateRoom();
+        }
+
+        // CARD 2: JOIN MATCH
+        DrawRectangleRounded({card2X, cardY, cardW, cardH}, 0.08f, 6, COL_BG_CARD);
+        DrawRectangleRoundedLinesEx({card2X, cardY, cardW, cardH}, 0.08f, 6, 2, COL_SEPARATOR);
+
+        DrawText("JOIN A ROOM", (int)(card2X + cardW/2 - MeasureText("JOIN A ROOM", 22)/2), (int)(cardY + 30), 22, COL_ACCENT);
+        
+        const char* joinDesc = "Enter the 5-digit code from your friend:";
+        DrawText(joinDesc, (int)(card2X + cardW/2 - MeasureText(joinDesc, 14)/2), (int)(cardY + 75), 14, COL_TEXT_DIM);
+
+        // Input Box for Join Code
+        float inputW = 170.0f;
+        float inputX = card2X + 35.0f;
+        float inputY = cardY + 115.0f;
+        drawThemedTextBox({inputX, inputY, inputW, 45}, g_onlineJoinCode, 10, g_onlineJoinActive, false, false);
+        
+        // Auto uppercase input
+        for (int i = 0; g_onlineJoinCode[i]; i++) {
+            g_onlineJoinCode[i] = (char)toupper(g_onlineJoinCode[i]);
+        }
+
+        if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
+            g_onlineJoinActive = CheckCollisionPointRec(GetMousePosition(), {inputX, inputY, inputW, 45});
+        }
+
+        // Paste Button
+        if (drawThemedButton({inputX + inputW + 10, inputY, 80, 45}, "Paste", false, 15)) {
+            pasteRoomCodeFromClipboard();
+            g_onlineJoinActive = true;
+        }
+
+        DrawText("You will play as BLACK", (int)(card2X + cardW/2 - MeasureText("You will play as BLACK", 16)/2), (int)(cardY + 180), 16, COL_TEXT_LIGHT);
+
+        // Join Room Action (Triggered by button or Enter key)
+        bool triggerJoin = drawThemedButton({card2X + 45, cardY + 240, cardW - 90, 48}, "Join Room", true, 19);
+        if (g_onlineJoinActive && IsKeyPressed(KEY_ENTER)) {
+            triggerJoin = true;
+        }
+
+        if (triggerJoin) {
+            int len = (int)strlen(g_onlineJoinCode);
+            while (len > 0 && g_onlineJoinCode[len-1] == ' ') g_onlineJoinCode[--len] = '\0';
+            
+            if (len == 0) {
+                snprintf(g_onlineMsg, sizeof(g_onlineMsg), "Please enter a 5-letter Room Code.");
+            } else {
+                g_onlineMsg[0] = '\0';
+                snprintf(g_onlineRoomCode, sizeof(g_onlineRoomCode), "%s", g_onlineJoinCode);
+                g_onlineMenuState = ONLINE_MENU_CONNECTING;
+                initWebSocketAndJoinRoom(g_onlineJoinCode);
+            }
+        }
+
+        // Back Button
+        if (drawThemedButton({cx - 90, cardY + cardH + 25, 180, 40}, "Back to Menu", false, 16)) {
+            g_onlineMsg[0] = '\0';
+            g_appState = STATE_MAIN_MENU;
+        }
+    }
+#else
+    DrawText("Online play is supported in the Web version.", (int)(cx - 180), (int)cy, 18, COL_TEXT_DIM);
+    if (drawThemedButton({cx - 80, cy + 60, 160, 40}, "Back to Menu")) {
         g_appState = STATE_MAIN_MENU;
     }
+#endif
 }
 
 void drawMainMenu() {

@@ -1,96 +1,191 @@
-import asyncio
+import os
 import json
-import websockets
-import string
 import random
+import string
+import asyncio
+from aiohttp import web, WSMsgType
 
 # Dictionary to hold rooms
-# room_id -> { "players": [websocket1, websocket2], "turn": 0 }
+# room_id -> { "players": [ws, ...], "white": ws, "black": ws }
 rooms = {}
 
 def generate_room_code():
-    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=5))
+    chars = string.ascii_uppercase + string.digits
+    # Avoid ambiguous characters (0, O, 1, I)
+    chars = chars.replace('0', '').replace('O', '').replace('1', '').replace('I', '')
+    for _ in range(200):
+        code = ''.join(random.choices(chars, k=5))
+        if code not in rooms:
+            return code
+    return ''.join(random.choices(chars, k=6))
 
-async def handle_client(websocket, path):
+async def handle_websocket(ws):
+    current_room = None
     try:
-        async for message in websocket:
-            data = json.loads(message)
-            action = data.get("action")
+        async for msg in ws:
+            if msg.type == WSMsgType.TEXT:
+                try:
+                    data = json.loads(msg.data)
+                except Exception as e:
+                    print(f"Invalid JSON received: {e}")
+                    continue
 
-            if action == "create_room":
-                room_id = generate_room_code()
-                rooms[room_id] = {"players": [websocket]}
-                await websocket.send(json.dumps({
-                    "type": "room_created",
-                    "room_id": room_id,
-                    "color": "white"
-                }))
-                print(f"Room {room_id} created.")
+                action = data.get("action")
 
-            elif action == "join_room":
-                room_id = data.get("room_id")
-                if room_id in rooms:
-                    if len(rooms[room_id]["players"]) < 2:
-                        rooms[room_id]["players"].append(websocket)
-                        await websocket.send(json.dumps({
-                            "type": "room_joined",
-                            "room_id": room_id,
-                            "color": "black"
-                        }))
-                        print(f"Player joined room {room_id}.")
-                        
-                        # Notify the first player
-                        player1 = rooms[room_id]["players"][0]
-                        await player1.send(json.dumps({
-                            "type": "opponent_joined"
-                        }))
-                    else:
-                        await websocket.send(json.dumps({
-                            "type": "error",
-                            "message": "Room is full."
-                        }))
-                else:
-                    await websocket.send(json.dumps({
-                        "type": "error",
-                        "message": "Room not found."
+                if action == "create_room":
+                    room_id = generate_room_code()
+                    current_room = room_id
+                    rooms[room_id] = {
+                        "players": [ws],
+                        "white": ws,
+                        "black": None
+                    }
+                    await ws.send_str(json.dumps({
+                        "type": "room_created",
+                        "room_id": room_id,
+                        "color": "white"
                     }))
+                    print(f"[ROOM CREATED] Code: {room_id} (Host waiting as White)")
 
-            elif action == "move":
-                room_id = data.get("room_id")
-                move_data = data.get("move")
-                
-                if room_id in rooms:
-                    # Forward move to the other player
-                    for player in rooms[room_id]["players"]:
-                        if player != websocket:
-                            await player.send(json.dumps({
-                                "type": "move",
-                                "move": move_data
+                elif action == "join_room":
+                    room_id = str(data.get("room_id", "")).strip().upper()
+                    print(f"[JOIN REQUEST] Code: '{room_id}'")
+                    if room_id in rooms:
+                        room_data = rooms[room_id]
+                        if len(room_data["players"]) < 2:
+                            current_room = room_id
+                            room_data["players"].append(ws)
+                            room_data["black"] = ws
+
+                            # Tell joining player they are Black
+                            await ws.send_str(json.dumps({
+                                "type": "room_joined",
+                                "room_id": room_id,
+                                "color": "black"
                             }))
+                            print(f"[PLAYER JOINED] Room: {room_id} (Joined as Black)")
 
-    except websockets.ConnectionClosed:
-        print("Client disconnected.")
+                            # Notify host (White) that opponent has joined
+                            host_ws = room_data["white"]
+                            if host_ws and not host_ws.closed:
+                                await host_ws.send_str(json.dumps({
+                                    "type": "opponent_joined",
+                                    "room_id": room_id
+                                }))
+                                print(f"[GAME STARTED] Room: {room_id} - Both players connected!")
+                        else:
+                            await ws.send_str(json.dumps({
+                                "type": "error",
+                                "message": f"Room '{room_id}' is full (2 players already connected)."
+                            }))
+                    else:
+                        await ws.send_str(json.dumps({
+                            "type": "error",
+                            "message": f"Room '{room_id}' not found. Check the code."
+                        }))
+
+                elif action == "move":
+                    room_id = str(data.get("room_id", "")).strip().upper()
+                    move_data = data.get("move")
+                    if room_id in rooms:
+                        for p in rooms[room_id]["players"]:
+                            if p != ws and not p.closed:
+                                await p.send_str(json.dumps({
+                                    "type": "move",
+                                    "move": move_data
+                                }))
+
+                elif action == "resign":
+                    room_id = str(data.get("room_id", "")).strip().upper()
+                    if room_id in rooms:
+                        for p in rooms[room_id]["players"]:
+                            if p != ws and not p.closed:
+                                await p.send_str(json.dumps({
+                                    "type": "opponent_resigned"
+                                }))
+
+                elif action == "leave_room":
+                    room_id = str(data.get("room_id", "")).strip().upper()
+                    if room_id in rooms:
+                        if ws in rooms[room_id]["players"]:
+                            rooms[room_id]["players"].remove(ws)
+                        for p in rooms[room_id]["players"]:
+                            if not p.closed:
+                                await p.send_str(json.dumps({
+                                    "type": "opponent_disconnected"
+                                }))
+                        if len(rooms[room_id]["players"]) == 0:
+                            del rooms[room_id]
+                            print(f"[ROOM CLOSED] {room_id}")
+                    current_room = None
+
+            elif msg.type in (WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.ERROR):
+                break
+
+    except Exception as e:
+        print(f"WebSocket client error: {e}")
     finally:
-        # Clean up empty rooms
-        empty_rooms = []
-        for room_id, room_data in rooms.items():
-            if websocket in room_data["players"]:
-                room_data["players"].remove(websocket)
-                for player in room_data["players"]:
-                    asyncio.create_task(player.send(json.dumps({
-                        "type": "opponent_disconnected"
-                    })))
-            if len(room_data["players"]) == 0:
-                empty_rooms.append(room_id)
-        
-        for room_id in empty_rooms:
-            del rooms[room_id]
-            print(f"Room {room_id} deleted.")
+        # Player disconnected or closed tab
+        to_delete = []
+        for r_id, r_info in list(rooms.items()):
+            if ws in r_info["players"]:
+                r_info["players"].remove(ws)
+                print(f"[CLIENT DISCONNECTED] Left room {r_id}")
+                for p in r_info["players"]:
+                    if not p.closed:
+                        try:
+                            asyncio.create_task(p.send_str(json.dumps({
+                                "type": "opponent_disconnected"
+                            })))
+                        except Exception:
+                            pass
+            if len(r_info["players"]) == 0:
+                to_delete.append(r_id)
 
-async def main():
-    print("Starting WebSocket server on port 8765...")
-    async with websockets.serve(handle_client, "0.0.0.0", 8765):
-        await asyncio.Future()  # run forever
+        for r_id in to_delete:
+            if r_id in rooms:
+                del rooms[r_id]
+                print(f"[ROOM DELETED] {r_id} is empty")
+
+async def ws_handler(request):
+    ws = web.WebSocketResponse(heartbeat=30.0)
+    await ws.prepare(request)
+    await handle_websocket(ws)
+    return ws
+
+async def health_check(request):
+    return web.json_response({
+        "status": "online",
+        "service": "ChessVerse 2D Online Server",
+        "active_rooms": len(rooms)
+    })
+
+async def index_handler(request):
+    # Support direct WebSocket connection to root URL as well
+    if request.headers.get("Upgrade", "").lower() == "websocket":
+        return await ws_handler(request)
+    if os.path.exists("index.html"):
+        return web.FileResponse("index.html")
+    return web.Response(text="ChessVerse 2D Server Online")
+
+def create_app():
+    app = web.Application()
+    # WebSocket endpoints
+    app.router.add_get('/ws', ws_handler)
+    app.router.add_get('/health', health_check)
+    app.router.add_get('/', index_handler)
+    # Serve static assets (index.js, index.wasm, index.data, assets/)
+    app.router.add_static('/', path='.', follow_symlinks=True)
+    return app
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    port = int(os.environ.get("PORT", 8080))
+    app = create_app()
+
+    print(f"==================================================")
+    print(f"   [CHESSVERSE 2D] UNIFIED CLOUD SERVER")
+    print(f"   HTTP & WebSocket listening on port {port}")
+    print(f"   Local URL: http://localhost:{port}")
+    print(f"==================================================")
+
+    web.run_app(app, host="0.0.0.0", port=port)
