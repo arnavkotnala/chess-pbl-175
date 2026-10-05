@@ -1,0 +1,14 @@
+emsdk/
+raylib/
+*.exe
+*.o
+*.a
+*.obj
+*.pdb
+*.ilk
+.vscode/
+patch.py
+patch_thread.py
+patch_trivia.py
+main_gui.cpp.bak
+__pycache__/
