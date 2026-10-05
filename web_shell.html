@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en-us">
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>ChessVerse 2D - Online Chess</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-touch-callout: none;
+        }
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            background: radial-gradient(circle at center, #24242d 0%, #0e0e12 100%);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            color: #e0ded8;
+        }
+        #game-wrapper {
+            position: relative;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            width: 100vw;
+            height: 100vh;
+        }
+        canvas.emscripten {
+            border: 0 none;
+            background-color: #1a1a20;
+            width: min(100vw, calc(100vh * (1024 / 768))) !important;
+            height: min(100vh, calc(100vw * (768 / 1024))) !important;
+            max-width: 100vw;
+            max-height: 100vh;
+            border-radius: 6px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.85);
+            display: block;
+            touch-action: none;
+        }
+        #loading-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background-color: #16161c;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 100;
+            pointer-events: none;
+            transition: opacity 0.4s ease;
+        }
+        .spinner {
+            width: 50px;
+            height: 50px;
+            border: 4px solid rgba(200, 170, 110, 0.2);
+            border-top: 4px solid #c8aa6e;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-bottom: 20px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .title {
+            font-size: 26px;
+            font-weight: 700;
+            letter-spacing: 2px;
+            color: #c8aa6e;
+            margin-bottom: 8px;
+            text-shadow: 0 2px 10px rgba(0,0,0,0.5);
+        }
+        .status {
+            font-size: 14px;
+            color: #8f8d88;
+            margin-bottom: 16px;
+        }
+        #progress-bar {
+            width: 260px;
+            height: 6px;
+            background: #2a2a35;
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        #progress-fill {
+            width: 0%;
+            height: 100%;
+            background: linear-gradient(90deg, #b08d4b, #e5c98d);
+            transition: width 0.2s ease;
+        }
+    </style>
+</head>
+<body>
+    <div id="game-wrapper">
+        <canvas class="emscripten" id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+        <div id="loading-overlay">
+            <div class="spinner"></div>
+            <div class="title">CHESSVERSE 2D</div>
+            <div id="status" class="status">Loading game assets...</div>
+            <div id="progress-bar">
+                <div id="progress-fill"></div>
+            </div>
+        </div>
+    </div>
+
+    <script type="text/javascript">
+        var canvas = document.getElementById("canvas");
+        var overlay = document.getElementById("loading-overlay");
+        var statusElement = document.getElementById("status");
+        var progressFill = document.getElementById("progress-fill");
+
+        function hideOverlay() {
+            if (overlay && overlay.style.display !== 'none') {
+                overlay.style.opacity = '0';
+                setTimeout(function() { overlay.style.display = 'none'; }, 400);
+            }
+        }
+
+        // WebGL context pre-initialization
+        var gl = null;
+        try {
+            gl = canvas.getContext("webgl2", { alpha: false, antialias: true }) ||
+                 canvas.getContext("webgl", { alpha: false, antialias: true }) ||
+                 canvas.getContext("experimental-webgl", { alpha: false, antialias: true });
+        } catch(e) {
+            console.error("WebGL error:", e);
+        }
+
+        // Mobile touch input forwarding
+        function setupTouch(el) {
+            function triggerMouse(e, type) {
+                var touch = e.changedTouches[0];
+                var simulated = new MouseEvent(type, {
+                    bubbles: true,
+                    cancelable: true,
+                    view: window,
+                    clientX: touch.clientX,
+                    clientY: touch.clientY,
+                    screenX: touch.screenX,
+                    screenY: touch.screenY,
+                    button: 0,
+                    buttons: (type === "mouseup") ? 0 : 1
+                });
+                el.dispatchEvent(simulated);
+                if (e.cancelable) e.preventDefault();
+            }
+            el.addEventListener("touchstart", function(e) { triggerMouse(e, "mousedown"); }, {passive: false});
+            el.addEventListener("touchmove", function(e) { triggerMouse(e, "mousemove"); }, {passive: false});
+            el.addEventListener("touchend", function(e) { triggerMouse(e, "mouseup"); }, {passive: false});
+        }
+        setupTouch(canvas);
+
+        var Module = {
+            preinitializedWebGLContext: gl,
+            canvas: canvas,
+            onRuntimeInitialized: function() {
+                hideOverlay();
+            },
+            setStatus: function(text) {
+                if (!Module.setStatus.last) Module.setStatus.last = { time: Date.now(), text: '' };
+                if (text === Module.setStatus.last.text) return;
+                var m = text.match(/([^(]+)\((\d+(\.\d+)?)\/(\d+)\)/);
+                if (m) {
+                    text = m[1];
+                    var current = parseFloat(m[2]);
+                    var total = parseFloat(m[4]);
+                    var pct = Math.round((current / total) * 100);
+                    if (progressFill) progressFill.style.width = pct + "%";
+                }
+                if (statusElement) statusElement.innerText = text;
+                if (!text || text.indexOf('Running') !== -1) {
+                    hideOverlay();
+                }
+            },
+            totalDependencies: 0,
+            monitorRunDependencies: function(left) {
+                this.totalDependencies = Math.max(this.totalDependencies, left);
+                Module.setStatus(left ? 'Preparing... (' + (this.totalDependencies-left) + '/' + this.totalDependencies + ')' : '');
+            },
+            print: function(text) {
+                console.log(text);
+                if (typeof text === 'string' && text.indexOf('Texture') !== -1) {
+                    hideOverlay();
+                }
+            },
+            printErr: function(text) {
+                console.error(text);
+            }
+        };
+
+        window.onerror = function(event) {
+            console.error("Global JS Error: ", event);
+        };
+    </script>
+    {{{ SCRIPT }}}
+</body>
+</html>

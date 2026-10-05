@@ -1668,9 +1668,46 @@ void drawMainMenu() {
     }
 }
 
+// ─── Main Game Loop Frame ───────────────────────────────────────────────────
+
+void UpdateDrawFrame() {
+    SCREEN_WIDTH = GetScreenWidth();
+    SCREEN_HEIGHT = GetScreenHeight();
+    BOARD_X = (SCREEN_WIDTH - NOTER_WIDTH - BOARD_SIZE) / 2;
+    if (BOARD_X < 20) BOARD_X = 20;
+    BOARD_Y = (SCREEN_HEIGHT - BOARD_SIZE) / 2;
+
+    BeginDrawing();
+    
+    switch (g_appState) {
+        case STATE_LOGIN:       drawLogin(); break;
+        case STATE_MAIN_MENU:   drawMainMenu(); break;
+        case STATE_ONLINE_MENU: drawOnlineMenu(); break;
+        case STATE_GAME:        handleGameInput(); drawGame(); break;
+        case STATE_LEADERBOARD: drawLeaderboard(); break;
+        case STATE_TRIVIA:      drawTrivia(); break;
+        case STATE_P2_LOGIN:    drawP2Login(); break;
+        case STATE_PROFILE_PIC: drawProfilePicSelection(); break;
+        default: break;
+    }
+    
+    EndDrawing();
+}
+
 // ─── Main Entry Point ───────────────────────────────────────────────────────
 
 int main() {
+#ifdef __EMSCRIPTEN__
+    InitWindow(1024, 768, "ChessVerse 2D");
+    SetTargetFPS(60);
+    SCREEN_WIDTH = 1024;
+    SCREEN_HEIGHT = 768;
+    BOARD_X = (SCREEN_WIDTH - NOTER_WIDTH - BOARD_SIZE) / 2;
+    if (BOARD_X < 20) BOARD_X = 20;
+    BOARD_Y = (SCREEN_HEIGHT - BOARD_SIZE) / 2;
+    loadAssets();
+    emscripten_set_main_loop(UpdateDrawFrame, 0, 1);
+#else
     SetConfigFlags(FLAG_FULLSCREEN_MODE);
     InitWindow(0, 0, "ChessVerse 2D");
     SetTargetFPS(60);
@@ -1686,30 +1723,11 @@ int main() {
     loadAssets();
     
     while (!WindowShouldClose()) {
-        SCREEN_WIDTH = GetScreenWidth();
-        SCREEN_HEIGHT = GetScreenHeight();
-        BOARD_X = (SCREEN_WIDTH - NOTER_WIDTH - BOARD_SIZE) / 2;
-        if (BOARD_X < 20) BOARD_X = 20;
-        BOARD_Y = (SCREEN_HEIGHT - BOARD_SIZE) / 2;
-
-        BeginDrawing();
-        
-        switch (g_appState) {
-            case STATE_LOGIN:       drawLogin(); break;
-            case STATE_MAIN_MENU:   drawMainMenu(); break;
-            case STATE_ONLINE_MENU: drawOnlineMenu(); break;
-            case STATE_GAME:        handleGameInput(); drawGame(); break;
-            case STATE_LEADERBOARD: drawLeaderboard(); break;
-            case STATE_TRIVIA:      drawTrivia(); break;
-            case STATE_P2_LOGIN:    drawP2Login(); break;
-            case STATE_PROFILE_PIC: drawProfilePicSelection(); break;
-            default: break;
-        }
-        
-        EndDrawing();
+        UpdateDrawFrame();
     }
     
     unloadAssets();
     CloseWindow();
+#endif
     return 0;
 }
