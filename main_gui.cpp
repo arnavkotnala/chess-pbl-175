@@ -112,13 +112,15 @@ bool g_onlineJoinActive = false;
 char g_onlineMsg[128] = "";
 
 enum OnlineMenuState {
-    ONLINE_MENU_DEFAULT = 0,
-    ONLINE_MENU_WAITING = 1,
-    ONLINE_MENU_CONNECTING = 2
+    ONLINE_MENU_DEFAULT   = 0,
+    ONLINE_MENU_WAITING   = 1,
+    ONLINE_MENU_CONNECTING = 2,
+    ONLINE_MENU_HINT_SETUP = 3   // host picks hint allowance before creating room
 };
 OnlineMenuState g_onlineMenuState = ONLINE_MENU_DEFAULT;
 bool g_copiedRoomCode = false;
 float g_copiedRoomTimer = 0.0f;
+int  g_onlineHintCount = 3;  // -1=unlimited, 0=none, 3 or 5
 
 bool          g_gameOver   = false;
 char          g_statusMsg[128] = "";
@@ -189,18 +191,34 @@ Texture2D texLines[7];     // [type]: glowing gold engraved linework
 
 
 extern "C" {
-    void onRoomCreated(const char* roomId) {
+    // hint_count: -1=unlimited, 0=none, 3 or 5
+    void onRoomCreated(const char* roomId, int hint_count) {
         snprintf(g_onlineRoomCode, sizeof(g_onlineRoomCode), "%s", roomId);
-        snprintf(g_onlineMsg, sizeof(g_onlineMsg), "Room created successfully!");
+#ifdef __EMSCRIPTEN__
+        EM_ASM({
+            window._currentRoomCode = UTF8ToString($0);
+        }, roomId);
+#endif
+        snprintf(g_onlineMsg, sizeof(g_onlineMsg), "Room created! Hints: %s",
+            hint_count < 0 ? "Unlimited" : (hint_count == 0 ? "None" :
+            (hint_count == 5 ? "5 each" : "3 each")));
+        g_hintLimit = HintLimit(hint_count);
         g_onlineMenuState = ONLINE_MENU_WAITING;
         g_copiedRoomCode = false;
     }
-    void onRoomJoined(const char* colorStr, const char* roomId = "") {
+    void onRoomJoined(const char* colorStr, const char* roomId, int hint_count) {
+#ifdef __EMSCRIPTEN__
+        EM_ASM({
+            window._currentRoomCode = "";
+        });
+#endif
         if (roomId && strlen(roomId) > 0) {
             snprintf(g_onlineRoomCode, sizeof(g_onlineRoomCode), "%s", roomId);
         }
         selectedRow = -1;
         selectedCol = -1;
+        g_hintLimit = HintLimit(hint_count);
+        hintDestRow = -1; hintDestCol = -1;
         g_isOnline = true;
         g_vsAI = false;
         g_appState = STATE_GAME;
@@ -217,9 +235,11 @@ extern "C" {
         }
         snprintf(g_statusMsg, sizeof(g_statusMsg), "Game started! You play as %s.", (g_playerColor == P_WHITE) ? "White" : "Black");
     }
-    void onOpponentJoined() {
+    void onOpponentJoined(int hint_count) {
         selectedRow = -1;
         selectedCol = -1;
+        g_hintLimit = HintLimit(hint_count);
+        hintDestRow = -1; hintDestCol = -1;
         g_isOnline = true;
         g_vsAI = false;
         g_appState = STATE_GAME;
@@ -281,7 +301,7 @@ extern "C" {
     }
 }
 
-void initWebSocketAndCreateRoom() {
+void initWebSocketAndCreateRoom(int hintCount) {
 #ifdef __EMSCRIPTEN__
     EM_ASM({
         if (window.socket) {
@@ -291,11 +311,12 @@ void initWebSocketAndCreateRoom() {
         var loc = window.location;
         var proto = (loc.protocol === 'https:') ? 'wss:' : 'ws:';
         var ws_url = window.CHESS_WS_URL || (proto + '//' + loc.host + '/ws');
+        var hintCount = $0;
 
         try {
             window.socket = new WebSocket(ws_url);
             window.socket.onopen = function() {
-                window.socket.send(JSON.stringify({action: "create_room"}));
+                window.socket.send(JSON.stringify({action: "create_room", hint_count: hintCount}));
             };
             window.socket.onerror = function(err) {
                 console.error("WebSocket error:", err);
@@ -303,10 +324,11 @@ void initWebSocketAndCreateRoom() {
             };
             window.socket.onmessage = function(event) {
                 var data = JSON.parse(event.data);
+                var hc = (typeof data.hint_count === 'number') ? data.hint_count : 3;
                 if (data.type === 'room_created') {
-                    ccall('onRoomCreated', 'void', ['string'], [data.room_id]);
+                    ccall('onRoomCreated', 'void', ['string', 'number'], [data.room_id, hc]);
                 } else if (data.type === 'opponent_joined') {
-                    ccall('onOpponentJoined', 'void', [], []);
+                    ccall('onOpponentJoined', 'void', ['number'], [hc]);
                 } else if (data.type === 'move') {
                     ccall('applyOpponentMove', 'void', ['number', 'number', 'number', 'number', 'number'],
                           [data.move.fromRow, data.move.fromCol, data.move.toRow, data.move.toCol, data.move.promoteTo]);
@@ -322,7 +344,7 @@ void initWebSocketAndCreateRoom() {
             console.error("WS init exception:", e);
             ccall('onWsError', 'void', ['string'], ["Failed to initialize connection."]);
         }
-    });
+    }, hintCount);
 #endif
 }
 
@@ -349,8 +371,9 @@ void initWebSocketAndJoinRoom(const char* roomId) {
             };
             window.socket.onmessage = function(event) {
                 var data = JSON.parse(event.data);
+                var hc = (typeof data.hint_count === 'number') ? data.hint_count : 3;
                 if (data.type === 'room_joined') {
-                    ccall('onRoomJoined', 'void', ['string', 'string'], [data.color, data.room_id || ""]);
+                    ccall('onRoomJoined', 'void', ['string', 'string', 'number'], [data.color, data.room_id || "", hc]);
                 } else if (data.type === 'move') {
                     ccall('applyOpponentMove', 'void', ['number', 'number', 'number', 'number', 'number'],
                           [data.move.fromRow, data.move.fromCol, data.move.toRow, data.move.toCol, data.move.promoteTo]);
@@ -402,6 +425,7 @@ void sendResignOnline() {
 void sendLeaveRoomOnline() {
 #ifdef __EMSCRIPTEN__
     EM_ASM({
+        window._currentRoomCode = "";
         if (window.socket) {
             try {
                 if (window.socket.readyState === WebSocket.OPEN) {
@@ -422,9 +446,11 @@ void sendLeaveRoomOnline() {
 }
 
 void copyRoomCodeToClipboard(const char* code) {
+    if (!code || strlen(code) == 0) return;
 #ifdef __EMSCRIPTEN__
     EM_ASM({
         var text = UTF8ToString($0);
+        window._currentRoomCode = text;
         if (navigator.clipboard && navigator.clipboard.writeText) {
             navigator.clipboard.writeText(text).catch(function(e){});
         } else {
@@ -436,6 +462,8 @@ void copyRoomCodeToClipboard(const char* code) {
             document.body.removeChild(ta);
         }
     }, code);
+#else
+    SetClipboardText(code);
 #endif
     g_copiedRoomCode = true;
     g_copiedRoomTimer = 2.5f;
@@ -466,6 +494,11 @@ void pasteRoomCodeFromClipboard() {
             promptFallback();
         }
     });
+#else
+    const char* clip = GetClipboardText();
+    if (clip && strlen(clip) > 0) {
+        setOnlineJoinCode(clip);
+    }
 #endif
 }
 
@@ -638,6 +671,22 @@ void drawThemedTextBox(Rectangle bounds, char* textBuf, int maxLen, bool active,
     Color bg = active ? COL_INPUT_ACTIVE : COL_INPUT_BG;
     Color border = active ? COL_ACCENT : COL_SEPARATOR;
 
+    // Detect click for mobile typing popup
+    Vector2 mouse = GetMousePosition();
+    if (CheckCollisionPointRec(mouse, bounds) && IsMouseButtonReleased(MOUSE_LEFT_BUTTON)) {
+#ifdef __EMSCRIPTEN__
+        char script[512];
+        snprintf(script, sizeof(script), "(function(){ var res = window.prompt('Enter text:', '%s'); return res !== null ? res : '%s'; })()", textBuf, textBuf);
+        char* result = emscripten_run_script_string(script);
+        if (result && strlen(result) > 0) {
+            strncpy(textBuf, result, maxLen - 1);
+            textBuf[maxLen - 1] = '\0';
+        } else if (result && strlen(result) == 0) {
+            textBuf[0] = '\0';
+        }
+#endif
+    }
+
     DrawRectangleRounded(bounds, 0.15f, 6, bg);
     DrawRectangleRoundedLinesEx(bounds, 0.15f, 6, 2, border);
     
@@ -667,9 +716,29 @@ void drawThemedTextBox(Rectangle bounds, char* textBuf, int maxLen, bool active,
     }
     
     if (active) {
+        bool isCtrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL) ||
+                      IsKeyDown(KEY_LEFT_SUPER) || IsKeyDown(KEY_RIGHT_SUPER);
+        if (isCtrl && IsKeyPressed(KEY_C)) {
+            copyRoomCodeToClipboard(textBuf);
+        }
+        if (isCtrl && IsKeyPressed(KEY_V)) {
+#ifdef __EMSCRIPTEN__
+            pasteRoomCodeFromClipboard();
+#else
+            const char* clip = GetClipboardText();
+            if (clip) {
+                for (int i = 0; clip[i] && (int)strlen(textBuf) < maxLen - 1; i++) {
+                    int len = (int)strlen(textBuf);
+                    textBuf[len] = clip[i];
+                    textBuf[len+1] = '\0';
+                }
+            }
+#endif
+        }
         int key = GetCharPressed();
         while (key > 0) {
-            if ((key >= 32) && (key <= 125) && ((int)strlen(textBuf) < maxLen - 1)) {
+            // Ignore character insertion if Ctrl or Cmd is held
+            if ((key >= 32) && (key <= 125) && !isCtrl && ((int)strlen(textBuf) < maxLen - 1)) {
                 int len = (int)strlen(textBuf);
                 textBuf[len] = (char)key;
                 textBuf[len+1] = '\0';
@@ -876,14 +945,18 @@ void handleGameInput() {
             snprintf(g_statusMsg, sizeof(g_statusMsg), "CPU is thinking...");
             g_aiIsThinking = true;
 #ifdef __EMSCRIPTEN__
-            Board boardCopy = g_board;
-            g_aiCalculatedMove = g_ai->getBestMove(boardCopy, boardCopy.state.currentTurn);
+            // Heap-allocate the copy so the 409 KB Board doesn't land on
+            // Emscripten's 64 KB WebAssembly stack and cause a stack overflow.
+            Board* boardCopy = new Board(g_board);
+            g_aiCalculatedMove = g_ai->getBestMove(*boardCopy, boardCopy->state.currentTurn);
+            delete boardCopy;
             g_aiIsThinking = false;
             g_aiMoveReady = true;
 #else
             std::thread([]() {
-                Board boardCopy = g_board;
-                g_aiCalculatedMove = g_ai->getBestMove(boardCopy, boardCopy.state.currentTurn);
+                Board* boardCopy = new Board(g_board);
+                g_aiCalculatedMove = g_ai->getBestMove(*boardCopy, boardCopy->state.currentTurn);
+                delete boardCopy;
                 g_aiIsThinking = false;
                 g_aiMoveReady = true;
             }).detach();
@@ -1106,21 +1179,29 @@ void drawGame() {
     }
     btnX += 90;
 
-    if (!g_isOnline) {
+    // Hint button — shown in all modes (offline AND online when hints are enabled)
+    if (!g_isOnline || g_hintLimit.canUse() || g_hintLimit.unlimited) {
+        // In online mode only show hint for the player whose turn it is
+        bool canHintNow = !g_isOnline ||
+            (g_myTurnOnline && !g_gameOver && g_board.state.currentTurn == g_playerColor);
         char hintBtnText[32];
         char hintRem[16];
         HintEngine::hintLabel(g_hintLimit, hintRem);
         snprintf(hintBtnText, sizeof(hintBtnText), "Hint(%s)", hintRem);
-        if (drawThemedButton({btnX, btnY, 100, 40}, hintBtnText)) {
-            if (!g_gameOver && g_hintLimit.canUse()) {
-                Move m = HintEngine::getHint(g_board, g_board.state.currentTurn, g_hintLimit);
+        bool hintDim = g_isOnline && !canHintNow;
+        if (drawThemedButton({btnX, btnY, 100, 40}, hintBtnText, !hintDim)) {
+            if (canHintNow && g_hintLimit.canUse()) {
+                // Heap-allocate board copy so we don't put 409 KB on the WASM stack
+                Board* bCopy = new Board(g_board);
+                Move m = HintEngine::getHint(*bCopy, g_board.state.currentTurn, g_hintLimit);
+                delete bCopy;
                 if (m.fromRow != -1) {
                     g_viewingMoveIdx = -1;
                     selectedRow = m.fromRow;
                     selectedCol = m.fromCol;
                     hintDestRow = m.toRow;
                     hintDestCol = m.toCol;
-                    snprintf(g_statusMsg, sizeof(g_statusMsg), "Hint: Move %c%d to %c%d (Blue)", 
+                    snprintf(g_statusMsg, sizeof(g_statusMsg), "Hint: Move %c%d to %c%d (Blue)",
                              'a' + m.fromCol, m.fromRow + 1, 'a' + m.toCol, m.toRow + 1);
                 }
             }
@@ -1665,7 +1746,79 @@ void drawOnlineMenu() {
     }
 
 #ifdef __EMSCRIPTEN__
-    if (g_onlineMenuState == ONLINE_MENU_WAITING) {
+    if (g_onlineMenuState == ONLINE_MENU_HINT_SETUP) {
+        // ─── HOST: HINT COUNT SELECTION CARD ──────────────────────────────────
+        float cardW = 480.0f;
+        float cardH = 380.0f;
+        float cardX = cx - cardW / 2.0f;
+        float cardY = cy - cardH / 2.0f + 20.0f;
+
+        DrawRectangleRounded({cardX, cardY, cardW, cardH}, 0.08f, 6, COL_BG_CARD);
+        DrawRectangleRoundedLinesEx({cardX, cardY, cardW, cardH}, 0.08f, 6, 2, COL_ACCENT);
+
+        DrawText("HINT SETTINGS", (int)(cx - MeasureText("HINT SETTINGS", 26)/2), (int)(cardY + 22), 26, COL_ACCENT);
+
+        const char* sub1 = "How many hints should each player get?";
+        DrawText(sub1, (int)(cx - MeasureText(sub1, 16)/2), (int)(cardY + 62), 16, COL_TEXT_DIM);
+        const char* sub2 = "This applies to both you and your opponent.";
+        DrawText(sub2, (int)(cx - MeasureText(sub2, 15)/2), (int)(cardY + 84), 15, COL_TEXT_DIM);
+
+        // 4 option buttons: 0, 3, 5, Unlimited
+        struct HintOption { int val; const char* label; const char* desc; };
+        static const HintOption opts[] = {
+            { 0,  "No Hints",  "Neither player can use hints" },
+            { 3,  "3 Hints",   "3 suggestions each per game" },
+            { 5,  "5 Hints",   "5 suggestions each per game" },
+            {-1,  "Unlimited", "Use as many hints as you like" }
+        };
+        float btnW = cardW - 60.0f;
+        float btnH = 46.0f;
+        float btnGap = 12.0f;
+        float firstBtnY = cardY + 118.0f;
+
+        for (int i = 0; i < 4; i++) {
+            float by = firstBtnY + i * (btnH + btnGap);
+            bool selected = (g_onlineHintCount == opts[i].val);
+
+            Color borderCol = selected ? COL_ACCENT : COL_SEPARATOR;
+            Color bgCol     = selected ? Fade(COL_ACCENT, 0.18f) : COL_BG_CARD_HOV;
+            Vector2 mouse = GetMousePosition();
+            Rectangle btnRect = {cardX + 30, by, btnW, btnH};
+            bool hover = CheckCollisionPointRec(mouse, btnRect);
+            if (hover) bgCol = selected ? Fade(COL_ACCENT, 0.28f) : COL_BG_CARD_HOV;
+
+            DrawRectangleRounded(btnRect, 0.12f, 6, bgCol);
+            DrawRectangleRoundedLinesEx(btnRect, 0.12f, 6, selected ? 2.5f : 1.0f, borderCol);
+
+            // Radio circle
+            float ry = by + btnH/2.0f;
+            float rx = cardX + 55.0f;
+            DrawCircleLines((int)rx, (int)ry, 9, borderCol);
+            if (selected) DrawCircle((int)rx, (int)ry, 5, COL_ACCENT);
+
+            // Label and description
+            DrawText(opts[i].label, (int)(cardX + 76), (int)(by + 8), 18, selected ? COL_ACCENT : COL_TEXT_LIGHT);
+            DrawText(opts[i].desc,  (int)(cardX + 76), (int)(by + 28), 13, COL_TEXT_DIM);
+
+            if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) && hover) {
+                g_onlineHintCount = opts[i].val;
+            }
+        }
+
+        // Confirm button
+        float confirmY = cardY + cardH - 58.0f;
+        if (drawThemedButton({cx - 120, confirmY, 240, 44}, "Confirm & Create Room", true, 17)) {
+            g_onlineMsg[0] = '\0';
+            g_onlineMenuState = ONLINE_MENU_CONNECTING;
+            snprintf(g_onlineRoomCode, sizeof(g_onlineRoomCode), "...");
+            initWebSocketAndCreateRoom(g_onlineHintCount);
+        }
+        // Back link
+        if (drawThemedButton({cx - 55, confirmY + 52, 110, 32}, "< Back", false, 15)) {
+            g_onlineMenuState = ONLINE_MENU_DEFAULT;
+        }
+    }
+    else if (g_onlineMenuState == ONLINE_MENU_WAITING) {
         // ─── WAITING ROOM CARD ─────────────────────────────────────────────
         float cardW = 460.0f;
         float cardH = 350.0f;
@@ -1691,9 +1844,15 @@ void drawOnlineMenu() {
         int codeW = MeasureText(g_onlineRoomCode, 38);
         DrawText(g_onlineRoomCode, (int)(cx - codeW / 2), (int)(badgeY + 14), 38, COL_ACCENT);
 
-        // Copy Code Button
-        const char* copyBtnText = g_copiedRoomCode ? "COPIED TO CLIPBOARD!" : "COPY CODE";
-        if (drawThemedButton({cx - 110, cardY + 180, 220, 42}, copyBtnText, true, 17)) {
+        // Copy Code Button & Shortcut
+        bool isCtrlWaiting = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL) ||
+                             IsKeyDown(KEY_LEFT_SUPER) || IsKeyDown(KEY_RIGHT_SUPER);
+        if (isCtrlWaiting && IsKeyPressed(KEY_C)) {
+            copyRoomCodeToClipboard(g_onlineRoomCode);
+        }
+
+        const char* copyBtnText = g_copiedRoomCode ? "COPIED TO CLIPBOARD!" : "COPY CODE (Ctrl+C)";
+        if (drawThemedButton({cx - 120, cardY + 180, 240, 42}, copyBtnText, true, 16)) {
             copyRoomCodeToClipboard(g_onlineRoomCode);
         }
 
@@ -1760,9 +1919,8 @@ void drawOnlineMenu() {
 
         if (drawThemedButton({card1X + 45, cardY + 240, cardW - 90, 48}, "Create Room", true, 19)) {
             g_onlineMsg[0] = '\0';
-            g_onlineMenuState = ONLINE_MENU_CONNECTING;
-            snprintf(g_onlineRoomCode, sizeof(g_onlineRoomCode), "...");
-            initWebSocketAndCreateRoom();
+            // Go to hint-selection first; actual WebSocket connect happens after
+            g_onlineMenuState = ONLINE_MENU_HINT_SETUP;
         }
 
         // CARD 2: JOIN MATCH
@@ -1789,13 +1947,25 @@ void drawOnlineMenu() {
             g_onlineJoinActive = CheckCollisionPointRec(GetMousePosition(), {inputX, inputY, inputW, 45});
         }
 
+        // Global card shortcut: Ctrl+V anywhere on join card pastes code, Ctrl+C copies
+        bool isCtrlJoin = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL) ||
+                          IsKeyDown(KEY_LEFT_SUPER) || IsKeyDown(KEY_RIGHT_SUPER);
+        if (isCtrlJoin && IsKeyPressed(KEY_V)) {
+            pasteRoomCodeFromClipboard();
+            g_onlineJoinActive = true;
+        }
+        if (isCtrlJoin && IsKeyPressed(KEY_C) && strlen(g_onlineJoinCode) > 0) {
+            copyRoomCodeToClipboard(g_onlineJoinCode);
+        }
+
         // Paste Button
         if (drawThemedButton({inputX + inputW + 10, inputY, 80, 45}, "Paste", false, 15)) {
             pasteRoomCodeFromClipboard();
             g_onlineJoinActive = true;
         }
+        DrawText("(Ctrl+V to paste)", (int)(inputX + 2), (int)(inputY + 48), 12, COL_TEXT_DIM);
 
-        DrawText("You will play as BLACK", (int)(card2X + cardW/2 - MeasureText("You will play as BLACK", 16)/2), (int)(cardY + 180), 16, COL_TEXT_LIGHT);
+        DrawText("You will play as BLACK", (int)(card2X + cardW/2 - MeasureText("You will play as BLACK", 16)/2), (int)(cardY + 185), 16, COL_TEXT_LIGHT);
 
         // Join Room Action (Triggered by button or Enter key)
         bool triggerJoin = drawThemedButton({card2X + 45, cardY + 240, cardW - 90, 48}, "Join Room", true, 19);

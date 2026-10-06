@@ -112,4 +112,9 @@ private:
 
     // Apply move without legality check (internal)
     void applyMoveRaw(GameState& s, const Move& m) const;
+
+    // Pure attack detection on an arbitrary GameState snapshot — no mutation of this.
+    // Used by getLegalMoves and isInCheck so they never need to const_cast or swap state.
+    static bool isSquareAttacked(const GameState& s, int r, int c, PieceColor byColor);
+    static bool isKingAttacked(const GameState& s, PieceColor c);
 };

@@ -137,10 +137,38 @@
             console.error("WebGL error:", e);
         }
 
-        // Prevent mobile browser gesture scrolling/zooming while interacting with the chess canvas
-        canvas.addEventListener("touchstart", function(e) { if (e.cancelable) e.preventDefault(); }, {passive: false});
+        // Prevent mobile browser gesture scrolling/zooming while interacting with the chess canvas, but allow taps
+        canvas.addEventListener("touchstart", function(e) { if (e.touches.length > 1 && e.cancelable) e.preventDefault(); }, {passive: false});
         canvas.addEventListener("touchmove", function(e) { if (e.cancelable) e.preventDefault(); }, {passive: false});
-        canvas.addEventListener("touchend", function(e) { if (e.cancelable) e.preventDefault(); }, {passive: false});
+        canvas.addEventListener("touchend", function(e) { }, {passive: false});
+
+        // Global Ctrl+C / Ctrl+V clipboard integration for room codes
+        window._currentRoomCode = "";
+        window.addEventListener("paste", function(e) {
+            var pastedText = "";
+            if (e.clipboardData && e.clipboardData.getData) {
+                pastedText = e.clipboardData.getData("text");
+            } else if (window.clipboardData && window.clipboardData.getData) {
+                pastedText = window.clipboardData.getData("Text");
+            }
+            if (pastedText) {
+                var clean = pastedText.trim().toUpperCase().substring(0, 10);
+                if (typeof Module !== 'undefined' && Module.ccall) {
+                    try {
+                        Module.ccall('setOnlineJoinCode', 'void', ['string'], [clean]);
+                    } catch(err) {}
+                }
+            }
+        });
+
+        window.addEventListener("copy", function(e) {
+            if (window._currentRoomCode && window._currentRoomCode.length > 0) {
+                if (e.clipboardData && e.clipboardData.setData) {
+                    e.clipboardData.setData("text/plain", window._currentRoomCode);
+                    e.preventDefault();
+                }
+            }
+        });
 
         var Module = {
             preinitializedWebGLContext: gl,

@@ -14,7 +14,7 @@ if not exist "raylib\src\libraylib.web.a" (
 )
 
 echo Building ChessVerse2D for Web...
-call em++ main_gui.cpp chess/board.cpp dsa/stack.c dsa/queue.c dsa/linkedlist.c dsa/sort.c -o index.html -I raylib/src raylib/src/libraylib.web.a -s USE_GLFW=3 -s MIN_WEBGL_VERSION=1 -s MAX_WEBGL_VERSION=2 -s EXPORTED_RUNTIME_METHODS=["ccall","cwrap"] -s EXPORTED_FUNCTIONS=["_main","_onRoomCreated","_onRoomJoined","_onOpponentJoined","_onOpponentDisconnected","_applyOpponentMove","_onWsError","_onOpponentResigned","_setOnlineJoinCode"] --preload-file assets --shell-file web_shell.html -s ALLOW_MEMORY_GROWTH=1 -DPLATFORM_WEB -DGRAPHICS_API_OPENGL_ES2 -D_DEFAULT_SOURCE -Wno-missing-braces -Wunused-result -O2
+call em++ main_gui.cpp chess/board.cpp dsa/stack.c dsa/queue.c dsa/linkedlist.c dsa/sort.c -o index.html -I raylib/src raylib/src/libraylib.web.a -s USE_GLFW=3 -s MIN_WEBGL_VERSION=1 -s MAX_WEBGL_VERSION=2 -s EXPORTED_RUNTIME_METHODS=["ccall","cwrap"] -s EXPORTED_FUNCTIONS=["_main","_onRoomCreated","_onRoomJoined","_onOpponentJoined","_onOpponentDisconnected","_applyOpponentMove","_onWsError","_onOpponentResigned","_setOnlineJoinCode"] --preload-file assets --shell-file web_shell.html -s ALLOW_MEMORY_GROWTH=1 -s STACK_SIZE=1048576 -DPLATFORM_WEB -DGRAPHICS_API_OPENGL_ES2 -D_DEFAULT_SOURCE -Wno-missing-braces -Wunused-result -O2
 
 echo Build complete! You can run it locally with:
 echo python server.py

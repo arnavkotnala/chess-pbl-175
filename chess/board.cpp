@@ -78,13 +78,17 @@ Board::~Board() {
 Board::Board(const Board& other) {
     state = other.state;
     history = stack_create(sizeof(GameState), 64);
-    // Note: we don't copy history for AI copies (not needed)
+    moveHistoryCount = 0;
+    snapshotCount = 1;
+    stateSnapshots[0] = state;
 }
 
 Board& Board::operator=(const Board& other) {
     if (this != &other) {
         state = other.state;
-        // Don't copy history for assignment (used in AI copies)
+        moveHistoryCount = 0;
+        snapshotCount = 1;
+        stateSnapshots[0] = state;
     }
     return *this;
 }
@@ -276,13 +280,13 @@ MoveList Board::getPseudoMoves(PieceColor c, bool checkCastle) const {
     return all;
 }
 
-// ─── isAttacked ───────────────────────────────────────────────────────────────
-bool Board::isAttacked(int r, int c, PieceColor byColor) const {
+// ─── Pure Attack Detection (No state mutation) ────────────────────────────────
+bool Board::isSquareAttacked(const GameState& s, int r, int c, PieceColor byColor) {
     // Knight attacks
     static const int knightJumps[8][2] = {{2,1},{2,-1},{-2,1},{-2,-1},{1,2},{1,-2},{-1,2},{-1,-2}};
     for (int j = 0; j < 8; j++) {
         int nr = r + knightJumps[j][0], nc = c + knightJumps[j][1];
-        if (inBounds(nr, nc) && state.grid[nr][nc].type == KNIGHT && state.grid[nr][nc].color == byColor)
+        if (nr >= 0 && nr < 8 && nc >= 0 && nc < 8 && s.grid[nr][nc].type == KNIGHT && s.grid[nr][nc].color == byColor)
             return true;
     }
     // Pawn attacks
@@ -290,22 +294,22 @@ bool Board::isAttacked(int r, int c, PieceColor byColor) const {
     int pawnCapDirs[] = {-1, 1};
     for (int d = 0; d < 2; d++) {
         int pr = r + pawnDir, pc = c + pawnCapDirs[d];
-        if (inBounds(pr, pc) && state.grid[pr][pc].type == PAWN && state.grid[pr][pc].color == byColor)
+        if (pr >= 0 && pr < 8 && pc >= 0 && pc < 8 && s.grid[pr][pc].type == PAWN && s.grid[pr][pc].color == byColor)
             return true;
     }
     // King attacks
     static const int kingDirs[8][2] = {{1,0},{-1,0},{0,1},{0,-1},{1,1},{1,-1},{-1,1},{-1,-1}};
     for (int d = 0; d < 8; d++) {
         int nr = r + kingDirs[d][0], nc = c + kingDirs[d][1];
-        if (inBounds(nr, nc) && state.grid[nr][nc].type == KING && state.grid[nr][nc].color == byColor)
+        if (nr >= 0 && nr < 8 && nc >= 0 && nc < 8 && s.grid[nr][nc].type == KING && s.grid[nr][nc].color == byColor)
             return true;
     }
     // Rook/Queen attacks (straight lines)
     static const int straightDirs[4][2] = {{1,0},{-1,0},{0,1},{0,-1}};
     for (int d = 0; d < 4; d++) {
         int nr = r + straightDirs[d][0], nc = c + straightDirs[d][1];
-        while (inBounds(nr, nc)) {
-            const Cell& cell = state.grid[nr][nc];
+        while (nr >= 0 && nr < 8 && nc >= 0 && nc < 8) {
+            const Cell& cell = s.grid[nr][nc];
             if (!cell.isEmpty()) {
                 if (cell.color == byColor && (cell.type == ROOK || cell.type == QUEEN))
                     return true;
@@ -318,8 +322,8 @@ bool Board::isAttacked(int r, int c, PieceColor byColor) const {
     static const int diagDirs[4][2] = {{1,1},{1,-1},{-1,1},{-1,-1}};
     for (int d = 0; d < 4; d++) {
         int nr = r + diagDirs[d][0], nc = c + diagDirs[d][1];
-        while (inBounds(nr, nc)) {
-            const Cell& cell = state.grid[nr][nc];
+        while (nr >= 0 && nr < 8 && nc >= 0 && nc < 8) {
+            const Cell& cell = s.grid[nr][nc];
             if (!cell.isEmpty()) {
                 if (cell.color == byColor && (cell.type == BISHOP || cell.type == QUEEN))
                     return true;
@@ -329,6 +333,25 @@ bool Board::isAttacked(int r, int c, PieceColor byColor) const {
         }
     }
     return false;
+}
+
+bool Board::isKingAttacked(const GameState& s, PieceColor c) {
+    int kr = -1, kc = -1;
+    for (int r = 0; r < 8; r++) {
+        for (int col = 0; col < 8; col++) {
+            if (s.grid[r][col].type == KING && s.grid[r][col].color == c) {
+                kr = r; kc = col; break;
+            }
+        }
+        if (kr != -1) break;
+    }
+    if (kr < 0) return false;
+    PieceColor opp = (c == P_WHITE) ? P_BLACK : P_WHITE;
+    return isSquareAttacked(s, kr, kc, opp);
+}
+
+bool Board::isAttacked(int r, int c, PieceColor byColor) const {
+    return isSquareAttacked(state, r, c, byColor);
 }
 
 // ─── King Position ────────────────────────────────────────────────────────────
@@ -342,11 +365,7 @@ void Board::kingPos(PieceColor c, int& outRow, int& outCol) const {
 }
 
 bool Board::isInCheck(PieceColor c) const {
-    int kr, kc;
-    kingPos(c, kr, kc);
-    if (kr < 0) return false;
-    PieceColor opp = (c == P_WHITE) ? P_BLACK : P_WHITE;
-    return isAttacked(kr, kc, opp);
+    return isKingAttacked(state, c);
 }
 
 // ─── Apply Move (internal raw) ────────────────────────────────────────────────
@@ -442,14 +461,21 @@ void Board::undoMove() {
 }
 
 // ─── Legal Moves ──────────────────────────────────────────────────────────────
+// WASM-safe: we copy only the small GameState (~800 bytes) rather than the full
+// Board (~409 KB with moveHistory/stateSnapshots), which overflows Emscripten's
+// default 64 KB stack. We borrow isAttacked/kingPos via a const helper that
+// only reads state, so we can pass a local GameState to a thin wrapper.
 MoveList Board::getLegalMoves(PieceColor c) const {
     MoveList pseudo = getPseudoMoves(c);
     MoveList legal;
     for (int i = 0; i < pseudo.count; i++) {
-        Board tmp = *this;
-        tmp.applyMoveRaw(tmp.state, pseudo.moves[i]);
-        PieceColor moved = (tmp.state.currentTurn == P_WHITE) ? P_BLACK : P_WHITE;
-        if (!tmp.isInCheck(moved)) legal.add(pseudo.moves[i]);
+        // Copy only the lightweight GameState (~800 bytes, safe on WASM stack)
+        GameState s = state;
+        applyMoveRaw(s, pseudo.moves[i]);
+        PieceColor moved = (s.currentTurn == P_WHITE) ? P_BLACK : P_WHITE;
+
+        // Check if moved player's king is attacked in the new state (pure check, no mutation)
+        if (!isKingAttacked(s, moved)) legal.add(pseudo.moves[i]);
     }
     return legal;
 }

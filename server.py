@@ -34,18 +34,24 @@ async def handle_websocket(ws):
 
                 if action == "create_room":
                     room_id = generate_room_code()
+                    # hint_count: -1=unlimited, 0=none, 3=3 hints, 5=5 hints (default 3)
+                    hint_count = int(data.get("hint_count", 3))
+                    if hint_count not in (-1, 0, 3, 5):
+                        hint_count = 3  # sanitize
                     current_room = room_id
                     rooms[room_id] = {
                         "players": [ws],
                         "white": ws,
-                        "black": None
+                        "black": None,
+                        "hint_count": hint_count
                     }
                     await ws.send_str(json.dumps({
                         "type": "room_created",
                         "room_id": room_id,
-                        "color": "white"
+                        "color": "white",
+                        "hint_count": hint_count
                     }))
-                    print(f"[ROOM CREATED] Code: {room_id} (Host waiting as White)")
+                    print(f"[ROOM CREATED] Code: {room_id} (Host as White, hints={hint_count})")
 
                 elif action == "join_room":
                     room_id = str(data.get("room_id", "")).strip().upper()
@@ -56,21 +62,24 @@ async def handle_websocket(ws):
                             current_room = room_id
                             room_data["players"].append(ws)
                             room_data["black"] = ws
+                            hint_count = room_data.get("hint_count", 3)
 
-                            # Tell joining player they are Black
+                            # Tell joining player they are Black and the hint setting
                             await ws.send_str(json.dumps({
                                 "type": "room_joined",
                                 "room_id": room_id,
-                                "color": "black"
+                                "color": "black",
+                                "hint_count": hint_count
                             }))
-                            print(f"[PLAYER JOINED] Room: {room_id} (Joined as Black)")
+                            print(f"[PLAYER JOINED] Room: {room_id} (Joined as Black, hints={hint_count})")
 
-                            # Notify host (White) that opponent has joined
+                            # Notify host (White) that opponent has joined, relay hint_count
                             host_ws = room_data["white"]
                             if host_ws and not host_ws.closed:
                                 await host_ws.send_str(json.dumps({
                                     "type": "opponent_joined",
-                                    "room_id": room_id
+                                    "room_id": room_id,
+                                    "hint_count": hint_count
                                 }))
                                 print(f"[GAME STARTED] Room: {room_id} - Both players connected!")
                         else:
@@ -157,7 +166,8 @@ async def health_check(request):
     return web.json_response({
         "status": "online",
         "service": "ChessVerse 2D Online Server",
-        "active_rooms": len(rooms)
+        "active_rooms": len(rooms),
+        "room_ids": list(rooms.keys())
     })
 
 async def index_handler(request):
