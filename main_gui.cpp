@@ -1748,20 +1748,25 @@ void drawOnlineMenu() {
 #ifdef __EMSCRIPTEN__
     if (g_onlineMenuState == ONLINE_MENU_HINT_SETUP) {
         // ─── HOST: HINT COUNT SELECTION CARD ──────────────────────────────────
-        float cardW = 480.0f;
-        float cardH = 380.0f;
+        float cardW = 540.0f;
+        float cardH = 512.0f;
         float cardX = cx - cardW / 2.0f;
-        float cardY = cy - cardH / 2.0f + 20.0f;
+        float cardY = cy - cardH / 2.0f + 12.0f;
 
-        DrawRectangleRounded({cardX, cardY, cardW, cardH}, 0.08f, 6, COL_BG_CARD);
-        DrawRectangleRoundedLinesEx({cardX, cardY, cardW, cardH}, 0.08f, 6, 2, COL_ACCENT);
+        // Card Drop Shadow
+        DrawRectangleRounded({cardX + 4, cardY + 4, cardW, cardH}, 0.06f, 6, Fade(BLACK, 0.45f));
+        // Main Card
+        DrawRectangleRounded({cardX, cardY, cardW, cardH}, 0.06f, 6, COL_BG_CARD);
+        DrawRectangleRoundedLinesEx({cardX, cardY, cardW, cardH}, 0.06f, 6, 2, COL_ACCENT);
 
+        // Header Title
         DrawText("HINT SETTINGS", (int)(cx - MeasureText("HINT SETTINGS", 26)/2), (int)(cardY + 22), 26, COL_ACCENT);
+        DrawRectangleRounded({cx - 30, cardY + 52, 60, 2.5f}, 0.5f, 2, COL_ACCENT);
 
         const char* sub1 = "How many hints should each player get?";
-        DrawText(sub1, (int)(cx - MeasureText(sub1, 16)/2), (int)(cardY + 62), 16, COL_TEXT_DIM);
+        DrawText(sub1, (int)(cx - MeasureText(sub1, 16)/2), (int)(cardY + 64), 16, COL_TEXT_LIGHT);
         const char* sub2 = "This applies to both you and your opponent.";
-        DrawText(sub2, (int)(cx - MeasureText(sub2, 15)/2), (int)(cardY + 84), 15, COL_TEXT_DIM);
+        DrawText(sub2, (int)(cx - MeasureText(sub2, 14)/2), (int)(cardY + 86), 14, COL_TEXT_DIM);
 
         // 4 option buttons: 0, 3, 5, Unlimited
         struct HintOption { int val; const char* label; const char* desc; };
@@ -1771,50 +1776,55 @@ void drawOnlineMenu() {
             { 5,  "5 Hints",   "5 suggestions each per game" },
             {-1,  "Unlimited", "Use as many hints as you like" }
         };
-        float btnW = cardW - 60.0f;
-        float btnH = 46.0f;
+        float btnW = cardW - 64.0f;
+        float btnH = 50.0f;
         float btnGap = 12.0f;
-        float firstBtnY = cardY + 118.0f;
+        float firstBtnY = cardY + 116.0f;
 
         for (int i = 0; i < 4; i++) {
             float by = firstBtnY + i * (btnH + btnGap);
             bool selected = (g_onlineHintCount == opts[i].val);
 
             Color borderCol = selected ? COL_ACCENT : COL_SEPARATOR;
-            Color bgCol     = selected ? Fade(COL_ACCENT, 0.18f) : COL_BG_CARD_HOV;
+            Color bgCol     = selected ? Fade(COL_ACCENT, 0.16f) : COL_BG_CARD_HOV;
             Vector2 mouse = GetMousePosition();
-            Rectangle btnRect = {cardX + 30, by, btnW, btnH};
+            Rectangle btnRect = {cardX + 32, by, btnW, btnH};
             bool hover = CheckCollisionPointRec(mouse, btnRect);
-            if (hover) bgCol = selected ? Fade(COL_ACCENT, 0.28f) : COL_BG_CARD_HOV;
+            if (hover) bgCol = selected ? Fade(COL_ACCENT, 0.26f) : Fade(COL_BTN_HOV, 0.9f);
 
-            DrawRectangleRounded(btnRect, 0.12f, 6, bgCol);
-            DrawRectangleRoundedLinesEx(btnRect, 0.12f, 6, selected ? 2.5f : 1.0f, borderCol);
+            if (hover || selected) {
+                DrawRectangleRounded({btnRect.x + 2, btnRect.y + 2, btnRect.width, btnRect.height}, 0.14f, 6, Fade(BLACK, 0.35f));
+            }
+            DrawRectangleRounded(btnRect, 0.14f, 6, bgCol);
+            DrawRectangleRoundedLinesEx(btnRect, 0.14f, 6, selected ? 2.0f : 1.0f, borderCol);
 
             // Radio circle
-            float ry = by + btnH/2.0f;
-            float rx = cardX + 55.0f;
-            DrawCircleLines((int)rx, (int)ry, 9, borderCol);
-            if (selected) DrawCircle((int)rx, (int)ry, 5, COL_ACCENT);
+            float ry = by + btnH / 2.0f;
+            float rx = cardX + 58.0f;
+            DrawCircleLines((int)rx, (int)ry, 10, borderCol);
+            if (selected) {
+                DrawCircle((int)rx, (int)ry, 6, COL_ACCENT);
+            }
 
             // Label and description
-            DrawText(opts[i].label, (int)(cardX + 76), (int)(by + 8), 18, selected ? COL_ACCENT : COL_TEXT_LIGHT);
-            DrawText(opts[i].desc,  (int)(cardX + 76), (int)(by + 28), 13, COL_TEXT_DIM);
+            DrawText(opts[i].label, (int)(cardX + 82), (int)(by + 8), 18, selected ? COL_ACCENT : COL_TEXT_LIGHT);
+            DrawText(opts[i].desc,  (int)(cardX + 82), (int)(by + 28), 13, selected ? Fade(COL_ACCENT, 0.9f) : COL_TEXT_DIM);
 
             if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) && hover) {
                 g_onlineHintCount = opts[i].val;
             }
         }
 
-        // Confirm button
-        float confirmY = cardY + cardH - 58.0f;
-        if (drawThemedButton({cx - 120, confirmY, 240, 44}, "Confirm & Create Room", true, 17)) {
+        // Action Buttons: Confirm & Back cleanly separated inside the card
+        float confirmY = cardY + 390.0f;
+        if (drawThemedButton({cx - 130, confirmY, 260, 46}, "Confirm & Create Room", true, 18)) {
             g_onlineMsg[0] = '\0';
             g_onlineMenuState = ONLINE_MENU_CONNECTING;
             snprintf(g_onlineRoomCode, sizeof(g_onlineRoomCode), "...");
             initWebSocketAndCreateRoom(g_onlineHintCount);
         }
-        // Back link
-        if (drawThemedButton({cx - 55, confirmY + 52, 110, 32}, "< Back", false, 15)) {
+        // Back button neatly positioned inside the card bottom padding
+        if (drawThemedButton({cx - 65, confirmY + 54, 130, 34}, "< Back", false, 15)) {
             g_onlineMenuState = ONLINE_MENU_DEFAULT;
         }
     }
