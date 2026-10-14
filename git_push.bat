@@ -1,7 +1,10 @@
 @echo off
-echo Pushing latest changes to GitHub (arnavkotnala/chess-pbl-175)...
-git add .
-git commit -m "Implement workable Create Room and Join Room with cloud-hosted WebSocket architecture"
-git push -u origin main
-echo Done!
+echo =======================================================
+echo Pushing latest updates to GitHub:
+echo https://github.com/arnavkotnala/chess-pbl-175
+echo =======================================================
+git push -f origin main
+echo.
+echo Pushed successfully! Render will automatically deploy your live updates.
 pause
+
