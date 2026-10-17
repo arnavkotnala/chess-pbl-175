@@ -16,6 +16,7 @@ LinkedList* ll_create(size_t dataSize) {
     list->count = 0;
     list->dataSize = dataSize;
     return list;
+    
 }
 
 int ll_append(LinkedList* list, const void* data) {
