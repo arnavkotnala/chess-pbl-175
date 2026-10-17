@@ -2,10 +2,10 @@ emsdk/
 raylib/
 *.exe
 *.o
+*.ilk
 *.a
 *.obj
 *.pdb
-*.ilk
 .vscode/
 patch.py
 patch_thread.py
