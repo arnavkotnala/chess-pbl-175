@@ -1,5 +1,6 @@
+
 @echo off
-echo Downloading Emscripten SDK...
+echo Downloading Emscripten SDK....
 git clone https://github.com/emscripten-core/emsdk.git
 cd emsdk
 call emsdk install latest
