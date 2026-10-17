@@ -1,11 +1,5 @@
 #pragma once
 
-/*
- * ─── Priyani Algo — Medium Difficulty (Depth 3) ────────────────────────────
- * Implements Minimax with Alpha-Beta Pruning + Iterative Deepening +
- * Killer Move Heuristic, fixed at search depth 3.
- */
-
 #include "board.h"
 #include <climits>
 #include <chrono>
