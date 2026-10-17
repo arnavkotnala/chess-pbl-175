@@ -671,21 +671,6 @@ void drawThemedTextBox(Rectangle bounds, char* textBuf, int maxLen, bool active,
     Color bg = active ? COL_INPUT_ACTIVE : COL_INPUT_BG;
     Color border = active ? COL_ACCENT : COL_SEPARATOR;
 
-    // Detect click for mobile typing popup
-    Vector2 mouse = GetMousePosition();
-    if (CheckCollisionPointRec(mouse, bounds) && IsMouseButtonReleased(MOUSE_LEFT_BUTTON)) {
-#ifdef __EMSCRIPTEN__
-        char script[512];
-        snprintf(script, sizeof(script), "(function(){ var res = window.prompt('Enter text:', '%s'); return res !== null ? res : '%s'; })()", textBuf, textBuf);
-        char* result = emscripten_run_script_string(script);
-        if (result && strlen(result) > 0) {
-            strncpy(textBuf, result, maxLen - 1);
-            textBuf[maxLen - 1] = '\0';
-        } else if (result && strlen(result) == 0) {
-            textBuf[0] = '\0';
-        }
-#endif
-    }
 
     DrawRectangleRounded(bounds, 0.15f, 6, bg);
     DrawRectangleRoundedLinesEx(bounds, 0.15f, 6, 2, border);
