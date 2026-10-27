@@ -927,7 +927,10 @@ void handleGameInput() {
             else if (g_board.isStalemate(g_playerColor)) { g_gameOver = true; snprintf(g_statusMsg, sizeof(g_statusMsg), "STALEMATE! Draw."); }
         }
         else if (!g_aiIsThinking) {
-            snprintf(g_statusMsg, sizeof(g_statusMsg), "CPU is thinking...");
+            if (g_ai->difficulty == EXPERT)
+                snprintf(g_statusMsg, sizeof(g_statusMsg), "Expert is thinking (depth %d)...", g_ai->expertDepth);
+            else
+                snprintf(g_statusMsg, sizeof(g_statusMsg), "CPU is thinking...");
             g_aiIsThinking = true;
 #ifdef __EMSCRIPTEN__
             // Heap-allocate the copy so the 409 KB Board doesn't land on
@@ -2131,27 +2134,32 @@ void drawMainMenu() {
         }
     }
 
-    // ─── Center: EASY / MEDIUM / HARD Mode Cards (Lowered and Centered) ───────
+    // ─── Center: EASY / MEDIUM / HARD / EXPERT Mode Cards (Lowered and Centered) ─
+    const int DIFF_CARDS = 4;
     float leftBound = leftX + leftW + (SCREEN_WIDTH > 1400 ? 28.0f : 18.0f);
     float rightBound = (float)SCREEN_WIDTH - (SCREEN_WIDTH > 1400 ? 45.0f : 22.0f);
     float availW = rightBound - leftBound;
     float gap = SCREEN_WIDTH > 1400 ? 24.0f : 14.0f;
-    float cardW = (availW - gap * 2.0f) / 3.0f;
+    float cardW = (availW - gap * (DIFF_CARDS - 1)) / DIFF_CARDS;
     if (cardW > 340.0f) cardW = 340.0f;
-    if (cardW < 210.0f) cardW = 210.0f;
+    if (cardW < 150.0f) cardW = 150.0f;
+    bool narrowCards = cardW < 200.0f;   // 1024px window: shrink card text so it fits
 
-    float totalCardsW = cardW * 3.0f + gap * 2.0f;
+    float totalCardsW = cardW * DIFF_CARDS + gap * (DIFF_CARDS - 1);
     float cardsStartX = leftBound + (availW - totalCardsW) / 2.0f;
 
-    const char* diffTitles[] = {"EASY", "MEDIUM", "HARD"};
-    const char* diffIcons[]  = {"P", "N", "Q"};
-    const char* diffTagline[]= {"Beginner Friendly", "Balanced Challenge", "No Mercy Mode"};
-    const char* diffDesc1[]  = {"Unlimited hints allowed", "3 hints available", "No hints allowed"};
-    const char* diffDesc2[]  = {"Casual pacing", "Standard chess clock", "Maximum depth AI"};
-    const char* diffExp[]    = {"+50 EXP on Victory", "+100 EXP on Victory", "+200 EXP on Victory"};
-    Color diffAccents[]      = {COL_SUCCESS, {220, 180, 60, 255}, COL_DANGER};
+    const char* diffTitles[] = {"EASY", "MEDIUM", "HARD", "EXPERT"};
+    const char* diffIcons[]  = {"P", "N", "Q", "K"};
+    const char* diffTagline[]= {"Beginner Friendly", "Balanced Challenge", "No Mercy Mode", "Adapts To You"};
+    const char* diffDesc1[]  = {"Unlimited hints allowed", "3 hints available", "No hints allowed", "No hints allowed"};
+    const char* diffDesc2[]  = {"Casual pacing", "Standard chess clock", "Maximum depth AI", "Adaptive depth 4-7"};
+    const char* diffExp[]    = {"+50 EXP on Victory", "+100 EXP on Victory", "+200 EXP on Victory", "Learns your level"};
+    Color diffAccents[]      = {COL_SUCCESS, {220, 180, 60, 255}, COL_DANGER, {160, 110, 230, 255}};
+    int titleFont = narrowCards ? 24 : 28;
+    int tagFont   = narrowCards ? 15 : 17;
+    int descFont  = narrowCards ? 12 : 14;
 
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < DIFF_CARDS; i++) {
         float cx = cardsStartX + i * (cardW + gap);
         Rectangle card = {cx, bodyY, cardW, cardH};
         bool hover = CheckCollisionPointRec(mouse, card);
@@ -2172,36 +2180,36 @@ void drawMainMenu() {
         DrawText(diffIcons[i], (int)(cx + cardW/2 - iconW/2), (int)iconY, iconSize, diffAccents[i]);
 
         // Title
-        int titleW = MeasureText(diffTitles[i], 28);
+        int titleW = MeasureText(diffTitles[i], titleFont);
         float titleCardY = iconY + iconSize + 10.0f;
-        DrawText(diffTitles[i], (int)(cx + cardW/2 - titleW/2), (int)titleCardY, 28, COL_TEXT_BRIGHT);
+        DrawText(diffTitles[i], (int)(cx + cardW/2 - titleW/2), (int)titleCardY, titleFont, COL_TEXT_BRIGHT);
 
         // Separator
         float sepY = titleCardY + 38.0f;
         DrawLine((int)(cx + 24), (int)sepY, (int)(cx + cardW - 24), (int)sepY, COL_SEPARATOR);
 
         // Tagline
-        int tagW = MeasureText(diffTagline[i], 17);
+        int tagW = MeasureText(diffTagline[i], tagFont);
         float tagY = sepY + 12.0f;
-        DrawText(diffTagline[i], (int)(cx + cardW/2 - tagW/2), (int)tagY, 17, COL_TEXT_LIGHT);
+        DrawText(diffTagline[i], (int)(cx + cardW/2 - tagW/2), (int)tagY, tagFont, COL_TEXT_LIGHT);
 
         // Descriptions
-        int l1w = MeasureText(diffDesc1[i], 14);
-        int l2w = MeasureText(diffDesc2[i], 14);
-        int expW = MeasureText(diffExp[i], 14);
+        int l1w = MeasureText(diffDesc1[i], descFont);
+        int l2w = MeasureText(diffDesc2[i], descFont);
+        int expW = MeasureText(diffExp[i], descFont);
         float desc1Y = tagY + 32.0f;
         float desc2Y = desc1Y + 24.0f;
         float expY   = desc2Y + 28.0f;
-        DrawText(diffDesc1[i], (int)(cx + cardW/2 - l1w/2), (int)desc1Y, 14, COL_TEXT_DIM);
-        DrawText(diffDesc2[i], (int)(cx + cardW/2 - l2w/2), (int)desc2Y, 14, COL_TEXT_DIM);
-        DrawText(diffExp[i],   (int)(cx + cardW/2 - expW/2), (int)expY,   14, COL_ACCENT_DIM);
+        DrawText(diffDesc1[i], (int)(cx + cardW/2 - l1w/2), (int)desc1Y, descFont, COL_TEXT_DIM);
+        DrawText(diffDesc2[i], (int)(cx + cardW/2 - l2w/2), (int)desc2Y, descFont, COL_TEXT_DIM);
+        DrawText(diffExp[i],   (int)(cx + cardW/2 - expW/2), (int)expY,   descFont, COL_ACCENT_DIM);
 
         // Big glowing PLAY button at bottom of card
         float btnH = cardH > 480.0f ? 46.0f : 40.0f;
         Rectangle playBtn = {cx + 24, bodyY + cardH - btnH - 18, cardW - 48, btnH};
         if (drawThemedButton(playBtn, "PLAY", hover, 19)) {
-            Difficulty diffs[] = {EASY, MEDIUM, HARD};
-            int hintCounts[] = {-1, 3, 0};
+            Difficulty diffs[] = {EASY, MEDIUM, HARD, EXPERT};
+            int hintCounts[] = {-1, 3, 0, 0};
             g_difficulty = diffs[i]; g_vsAI = true; g_playerColor = P_WHITE;
             g_rankedPvp = false; g_player2 = nullptr;
             if (g_ai) delete g_ai; 
