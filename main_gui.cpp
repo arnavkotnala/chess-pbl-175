@@ -1110,27 +1110,30 @@ void drawGame() {
         DrawText(viewLabel, BOARD_X + (BOARD_SIZE - vw) / 2, BOARD_Y - 30, 20, Fade(SKYBLUE, 0.9f));
     }
     
-    // Status & Room Info
+    // Status & Room Info (kept just above the board so it stays close on large screens)
+    int statusX = BOARD_X > 20 ? BOARD_X : 20;
     if (g_isOnline) {
+        int topY = BOARD_Y - 80 > 10 ? BOARD_Y - 80 : 10;   // clear of the "Viewing move" label at BOARD_Y-30
         char onlineTop[128];
-        snprintf(onlineTop, sizeof(onlineTop), "ROOM: [%s]   |   YOU PLAY AS %s", 
+        snprintf(onlineTop, sizeof(onlineTop), "ROOM: [%s]   |   YOU PLAY AS %s",
                  g_onlineRoomCode, (g_playerColor == P_WHITE) ? "WHITE" : "BLACK");
-        DrawText(onlineTop, 20, 15, 20, COL_ACCENT);
+        DrawText(onlineTop, statusX, topY, 20, COL_ACCENT);
 
         if (g_gameOver) {
-            DrawText(g_statusMsg, 20, 42, 20, COL_ACCENT);
+            DrawText(g_statusMsg, statusX, topY + 27, 20, COL_ACCENT);
         } else if (g_myTurnOnline) {
-            DrawText("YOUR TURN - Click a piece to move", 20, 42, 20, COL_SUCCESS);
+            DrawText("YOUR TURN - Click a piece to move", statusX, topY + 27, 20, COL_SUCCESS);
         } else {
-            DrawText("Opponent is thinking...", 20, 42, 20, COL_TEXT_DIM);
+            DrawText("Opponent is thinking...", statusX, topY + 27, 20, COL_TEXT_DIM);
         }
     } else {
-        DrawText(g_statusMsg, 20, 20, 20, COL_TEXT_DIM);
+        DrawText(g_statusMsg, statusX, BOARD_Y - 64 > 20 ? BOARD_Y - 64 : 20, 20, COL_TEXT_DIM);
     }
-    
-    // ─── Bottom Buttons ──────────────────────────────────────────────────────
+
+    // ─── Bottom Buttons (anchored under the board) ──────────────────────────
     float btnY = (float)SCREEN_HEIGHT - 60;
-    float btnX = 20;
+    if (btnY > BOARD_Y + BOARD_SIZE + 30) btnY = (float)(BOARD_Y + BOARD_SIZE + 30);
+    float btnX = (float)statusX;
 
     if (!g_isOnline) {
         if (drawThemedButton({btnX, btnY, 80, 40}, "Undo")) {
@@ -1252,7 +1255,14 @@ void drawGame() {
 
     const char* pieceLetters = ".PNBRQK";
     int maxVisibleMoves = (SCREEN_HEIGHT - moveListY - 20) / 22;
+    if (maxVisibleMoves < 1) maxVisibleMoves = 1;
     int totalPairs = (g_board.moveHistoryCount + 1) / 2;
+
+    // Keep the newest move in view whenever a move is played
+    static int lastNoterMoveCount = 0;
+    if (g_board.moveHistoryCount > lastNoterMoveCount && totalPairs > maxVisibleMoves)
+        g_noterScrollOffset = totalPairs - maxVisibleMoves;
+    lastNoterMoveCount = g_board.moveHistoryCount;
 
     if (totalPairs > maxVisibleMoves) {
         Vector2 mouse = GetMousePosition();
@@ -1268,7 +1278,7 @@ void drawGame() {
     }
 
     int startPair = g_noterScrollOffset;
-    for (int p = startPair; p < totalPairs && (moveListY < SCREEN_HEIGHT - 60); p++) {
+    for (int p = startPair, drawn = 0; p < totalPairs && drawn < maxVisibleMoves; p++, drawn++) {
         int whiteIdx = p * 2;
         int blackIdx = p * 2 + 1;
 
@@ -1448,11 +1458,14 @@ void drawLeaderboard() {
     User sortedUsers[MAX_USERS];
     int count = g_auth.getLeaderboard(sortedUsers);
     int displayCount = count < 15 ? count : 15;
-    
-    // Calculate total content height: title(40) + gap(15) + subtitle(18) + gap(25) + table + gap(25) + button(45)
+    int maxRows = (SCREEN_HEIGHT - 40 - 170 - 55) / 35;   // rows that fit with the title and Back button
+    if (maxRows < 1) maxRows = 1;
+    if (displayCount > maxRows) displayCount = maxRows;
+
+    // Total content height: title block(100) + table + gap(25) + button(45)
     float tableH = (float)(displayCount * 35 + 55);
     if (tableH < 100) tableH = 100;
-    float totalH = 40 + 15 + 18 + 25 + tableH + 25 + 45;
+    float totalH = 100 + tableH + 25 + 45;
     float baseY = (SCREEN_HEIGHT - totalH) / 2.0f;
     if (baseY < 30) baseY = 30;
     
@@ -1528,7 +1541,7 @@ void drawTrivia() {
     DrawText(q->question, SCREEN_WIDTH/2 - qWidth/2, (int)(baseY + 80), 20, COL_TEXT_BRIGHT);
 
     float startY = baseY + 120;
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 4; i++) {   // Question::options holds exactly 4 answers
         Rectangle optRect = {(float)SCREEN_WIDTH/2 - 280, startY + i * 70, 560, 55};
         
         Vector2 mouse = GetMousePosition();
@@ -2221,9 +2234,47 @@ void drawMainMenu() {
     }
 }
 
+// ─── Web: Fit Canvas To Browser Window ──────────────────────────────────────
+#ifdef __EMSCRIPTEN__
+// Landscape windows are filled completely; portrait windows keep a 4:3 box.
+// The logical size never drops below 1024x768 — smaller windows get the same
+// layout scaled down by CSS (mouse/touch input is rescaled by raylib/GLFW).
+// Must run before BeginDrawing: resizing the canvas clears the frame.
+void fitCanvasToWindow() {
+    int winW = EM_ASM_INT({ return document.documentElement.clientWidth; });
+    int winH = EM_ASM_INT({ return document.documentElement.clientHeight; });
+    if (winW <= 0 || winH <= 0) return;
+
+    float dispW = (float)winW;
+    float dispH = (float)winH;
+    if (dispH > dispW * 0.75f) dispH = dispW * 0.75f;
+    float s = fminf(1.0f, fminf(dispW / 1024.0f, dispH / 768.0f));
+    int logicalW = (int)(dispW / s + 0.5f);
+    int logicalH = (int)(dispH / s + 0.5f);
+
+    static int lastDispW = -1, lastDispH = -1;
+    if ((int)dispW != lastDispW || (int)dispH != lastDispH) {
+        // CSS size lives in a stylesheet variable: GLFW strips inline canvas sizes on resize
+        EM_ASM({
+            var st = document.documentElement.style;
+            st.setProperty('--canvas-w', $0 + 'px');
+            st.setProperty('--canvas-h', $1 + 'px');
+        }, (int)dispW, (int)dispH);
+        lastDispW = (int)dispW;
+        lastDispH = (int)dispH;
+    }
+    // Compare with the real size (not the last request) so fullscreen changes are corrected
+    if (logicalW != GetScreenWidth() || logicalH != GetScreenHeight())
+        SetWindowSize(logicalW, logicalH);
+}
+#endif
+
 // ─── Main Game Loop Frame ───────────────────────────────────────────────────
 
 void UpdateDrawFrame() {
+#ifdef __EMSCRIPTEN__
+    fitCanvasToWindow();
+#endif
     SCREEN_WIDTH = GetScreenWidth();
     SCREEN_HEIGHT = GetScreenHeight();
     BOARD_X = (SCREEN_WIDTH - NOTER_WIDTH - BOARD_SIZE) / 2;
