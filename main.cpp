@@ -277,7 +277,7 @@ void gameLoop() {
         setColor(CLR_TITLE);
         printf("  ♚ CHESSVERSE — ");
         if (g_vsAI) {
-            const char* diffNames[] = {"Easy", "Medium", "Hard"};
+            const char* diffNames[] = {"Easy", "Medium", "Hard", "Expert"};
             printf("vs AI (%s)", diffNames[g_difficulty]);
         } else {
             printf("Player vs Player");
@@ -516,7 +516,8 @@ void menuNewGame() {
     printf("  1. Easy   (Random AI)\n");
     printf("  2. Medium (AI Depth 3)\n");
     printf("  3. Hard   (AI Depth 5)\n");
-    printf("  4. Player vs Player (local)\n");
+    printf("  4. Expert (Adaptive AI, Depth 4-7)\n");
+    printf("  5. Player vs Player (local)\n");
     printf("  0. Back\n");
     resetColor();
     printDivider();
@@ -532,7 +533,8 @@ void menuNewGame() {
         case '1': g_difficulty = EASY;   g_hint1 = HintLimit(-1); g_hint2 = HintLimit(-1); g_vsAI = true; break;
         case '2': g_difficulty = MEDIUM; g_hint1 = HintLimit(3);  g_hint2 = HintLimit(3);  g_vsAI = true; break;
         case '3': g_difficulty = HARD;   g_hint1 = HintLimit(0);  g_hint2 = HintLimit(0);  g_vsAI = true; break;
-        case '4': g_difficulty = MEDIUM; g_vsAI = false;
+        case '4': g_difficulty = EXPERT; g_hint1 = HintLimit(0);  g_hint2 = HintLimit(0);  g_vsAI = true; break;
+        case '5': g_difficulty = MEDIUM; g_vsAI = false;
                   g_hint1 = HintLimit(3); g_hint2 = HintLimit(3); break;
         default: return;
     }
